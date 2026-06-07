@@ -3,6 +3,7 @@ const cors = require("cors");
 const dotenv = require("dotenv");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+
 const db = require("./config/db");
 const verifyToken = require("./middleware/authMiddleware");
 const productRoutes = require("./routes/productRoutes");
@@ -14,15 +15,13 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
+
 app.use("/", productRoutes);
 app.use("/", billRoutes);
 
-// Test API
 app.get("/", async (req, res) => {
   try {
-    const [rows] = await db.query(
-      "SELECT NOW() as serverTime"
-    );
+    const [rows] = await db.query("SELECT NOW() as serverTime");
 
     res.json({
       success: true,
@@ -37,7 +36,115 @@ app.get("/", async (req, res) => {
   }
 });
 
-// Register Shop + Owner
+app.get("/net-profit", verifyToken, async (req, res) => {
+  try {
+    const shopId = req.user.shop_id;
+
+    const [profitRows] = await db.query(
+      `
+      SELECT
+        COALESCE(SUM(bi.total), 0) AS total_sales,
+        COALESCE(SUM(bi.profit), 0) AS total_profit
+      FROM bill_items bi
+      INNER JOIN bills b
+        ON b.id = bi.bill_id
+      WHERE b.shop_id = ?
+      `,
+      [shopId]
+    );
+
+    const [expenseRows] = await db.query(
+      `
+      SELECT
+        COALESCE(SUM(amount), 0) AS total_expenses
+      FROM expenses
+      WHERE shop_id = ?
+      `,
+      [shopId]
+    );
+
+    const totalSales = Number(profitRows[0].total_sales || 0);
+    const totalProfit = Number(profitRows[0].total_profit || 0);
+    const totalExpenses = Number(expenseRows[0].total_expenses || 0);
+    const netProfit = totalProfit - totalExpenses;
+
+    res.json({
+      success: true,
+      report: {
+        total_sales: totalSales,
+        total_profit: totalProfit,
+        total_expenses: totalExpenses,
+        net_profit: netProfit,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+app.post("/expenses", verifyToken, async (req, res) => {
+  try {
+    const { title, amount, category, expense_date } = req.body;
+
+    if (!title || !amount || !expense_date) {
+      return res.status(400).json({
+        success: false,
+        message: "Title, amount and date required",
+      });
+    }
+
+    const [result] = await db.query(
+      `INSERT INTO expenses
+       (shop_id, title, amount, category, expense_date, created_by)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        req.user.shop_id,
+        title,
+        amount,
+        category || "",
+        expense_date,
+        req.user.user_id,
+      ]
+    );
+
+    res.json({
+      success: true,
+      message: "Expense added successfully",
+      expense_id: result.insertId,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+app.get("/expenses", verifyToken, async (req, res) => {
+  try {
+    const [expenses] = await db.query(
+      `SELECT *
+       FROM expenses
+       WHERE shop_id = ?
+       ORDER BY expense_date DESC, id DESC`,
+      [req.user.shop_id]
+    );
+
+    res.json({
+      success: true,
+      expenses,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
 app.post("/register-shop", async (req, res) => {
   const connection = await db.getConnection();
 
@@ -81,9 +188,9 @@ app.post("/register-shop", async (req, res) => {
 
     await connection.query(
       `INSERT INTO users 
-       (shop_id, username, password, role)
-       VALUES (?, ?, ?, ?)`,
-      [shopId, username, hashedPassword, "owner"]
+       (shop_id, username, password, role, status)
+       VALUES (?, ?, ?, ?, ?)`,
+      [shopId, username, hashedPassword, "owner", "active"]
     );
 
     await connection.commit();
@@ -111,89 +218,352 @@ app.post("/register-shop", async (req, res) => {
   }
 });
 
-app.post(
-  "/products",
-  verifyToken,
-  async (req, res) => {
-    try {
-      const {
+app.post("/staff", verifyToken, async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    const shopId = req.user.shop_id;
+
+    if (req.user.role !== "owner") {
+      return res.status(403).json({
+        success: false,
+        message: "Only owner can add staff",
+      });
+    }
+
+    if (!username || !password) {
+      return res.status(400).json({
+        success: false,
+        message: "Username and password required",
+      });
+    }
+
+    const [existing] = await db.query(
+      `SELECT id FROM users
+       WHERE shop_id = ? AND username = ?`,
+      [shopId, username]
+    );
+
+    if (existing.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Username already exists",
+      });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const [result] = await db.query(
+      `INSERT INTO users
+       (shop_id, username, password, role, status)
+       VALUES (?, ?, ?, ?, ?)`,
+      [shopId, username, hashedPassword, "staff", "active"]
+    );
+
+    res.json({
+      success: true,
+      message: "Staff Added Successfully",
+      staff_id: result.insertId,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+app.get("/monthly-top-selling", verifyToken, async (req, res) => {
+  try {
+    const shopId = req.user.shop_id;
+
+    const [rows] = await db.query(
+      `
+      SELECT
+        product_name,
+        SUM(quantity) AS total_qty
+      FROM bill_items bi
+      INNER JOIN bills b
+        ON b.id = bi.bill_id
+      WHERE b.shop_id = ?
+      GROUP BY product_name
+      ORDER BY total_qty DESC
+      LIMIT 20
+      `,
+      [shopId]
+    );
+
+    res.json({
+      success: true,
+      products: rows,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+app.get("/sales-report", verifyToken, async (req, res) => {
+  try {
+    const shopId = req.user.shop_id;
+
+    const [bills] = await db.query(
+      `
+      SELECT
+        id,
+        customer_name,
+        total,
+        discount,
+        created_at
+      FROM bills
+      WHERE shop_id = ?
+      ORDER BY id DESC
+      `,
+      [shopId]
+    );
+
+    res.json({
+      success: true,
+      bills,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+app.get("/dashboard", verifyToken, async (req, res) => {
+  try {
+    const shopId = req.user.shop_id;
+
+    const [salesRows] = await db.query(
+      `
+      SELECT
+        COALESCE(SUM(bi.total), 0) AS total_sales,
+        COALESCE(SUM(bi.profit), 0) AS total_profit,
+        COALESCE(SUM(b.discount), 0) AS total_discount,
+        COALESCE(SUM(bi.quantity), 0) AS total_items,
+        COUNT(DISTINCT b.id) AS total_bills
+      FROM bills b
+      LEFT JOIN bill_items bi ON bi.bill_id = b.id
+      WHERE b.shop_id = ?
+      `,
+      [shopId]
+    );
+
+    const [productRows] = await db.query(
+      `
+      SELECT
+        COUNT(*) AS total_products,
+        COALESCE(SUM(CASE WHEN stock <= 5 THEN 1 ELSE 0 END), 0) AS low_stock_count
+      FROM products
+      WHERE shop_id = ?
+      `,
+      [shopId]
+    );
+
+    const [topRows] = await db.query(
+      `
+      SELECT
+        bi.product_name,
+        SUM(bi.quantity) AS total_qty
+      FROM bill_items bi
+      INNER JOIN bills b ON b.id = bi.bill_id
+      WHERE b.shop_id = ?
+      GROUP BY bi.product_name
+      ORDER BY total_qty DESC
+      LIMIT 1
+      `,
+      [shopId]
+    );
+
+    res.json({
+      success: true,
+      dashboard: {
+        total_sales: salesRows[0].total_sales,
+        total_profit: salesRows[0].total_profit,
+        total_discount: salesRows[0].total_discount,
+        total_items: salesRows[0].total_items,
+        total_bills: salesRows[0].total_bills,
+        total_products: productRows[0].total_products,
+        low_stock_count: productRows[0].low_stock_count,
+        top_product: topRows.length > 0 ? topRows[0].product_name : "No sales",
+        top_qty: topRows.length > 0 ? topRows[0].total_qty : 0,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+app.get("/low-stock", verifyToken, async (req, res) => {
+  try {
+    const shopId = req.user.shop_id;
+
+    const [products] = await db.query(
+      `
+      SELECT
+        id,
         barcode,
         name,
         size,
         mrp,
-        buying_price,
-        stock,
-      } = req.body;
+        stock
+      FROM products
+      WHERE shop_id = ?
+      AND stock <= 5
+      ORDER BY stock ASC
+      `,
+      [shopId]
+    );
 
-      const shopId = req.user.shop_id;
+    res.json({
+      success: true,
+      products,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
 
-      const [result] = await db.query(
-        `INSERT INTO products
-        (
-          shop_id,
-          barcode,
-          name,
-          size,
-          mrp,
-          buying_price,
-          stock
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [
-          shopId,
-          barcode || "",
-          name,
-          size || "",
-          mrp || 0,
-          buying_price || 0,
-          stock || 0,
-        ]
-      );
+app.get("/staff", verifyToken, async (req, res) => {
+  try {
+    const shopId = req.user.shop_id;
 
-      res.json({
-        success: true,
-        message: "Product Added",
-        product_id: result.insertId,
-      });
-    } catch (error) {
-      res.status(500).json({
+    const [staff] = await db.query(
+      `SELECT id, username, role, status
+       FROM users
+       WHERE shop_id = ? AND role = 'staff'
+       ORDER BY id DESC`,
+      [shopId]
+    );
+
+    res.json({
+      success: true,
+      staff,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+app.put("/staff/:id/status", verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (req.user.role !== "owner") {
+      return res.status(403).json({
         success: false,
-        error: error.message,
+        message: "Only owner can update staff",
       });
     }
-  }
-);
 
-app.get(
-  "/products",
-  verifyToken,
-  async (req, res) => {
-    try {
-      const shopId = req.user.shop_id;
-
-      const [products] = await db.query(
-        `SELECT *
-         FROM products
-         WHERE shop_id = ?
-         ORDER BY id DESC`,
-        [shopId]
-      );
-
-      res.json({
-        success: true,
-        count: products.length,
-        products,
-      });
-    } catch (error) {
-      res.status(500).json({
+    if (status !== "active" && status !== "inactive") {
+      return res.status(400).json({
         success: false,
-        error: error.message,
+        message: "Invalid status",
       });
     }
-  }
-);
 
-// Login API
+    await db.query(
+      `UPDATE users
+       SET status = ?
+       WHERE id = ? AND shop_id = ? AND role = 'staff'`,
+      [status, id, req.user.shop_id]
+    );
+
+    res.json({
+      success: true,
+      message:
+        status === "active"
+          ? "Staff enabled successfully"
+          : "Staff disabled successfully",
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+app.get("/staff-sales", verifyToken, async (req, res) => {
+  try {
+    const shopId = req.user.shop_id;
+
+    const [rows] = await db.query(
+      `
+      SELECT
+        u.username AS staff_name,
+        COUNT(b.id) AS total_bills,
+        COALESCE(SUM(b.total), 0) AS total_sales,
+        COALESCE(SUM(b.discount), 0) AS total_discount
+      FROM users u
+      LEFT JOIN bills b 
+        ON b.created_by = u.id 
+        AND b.shop_id = u.shop_id
+      WHERE u.shop_id = ?
+      GROUP BY u.id, u.username
+      ORDER BY total_sales DESC
+      `,
+      [shopId]
+    );
+
+    res.json({
+      success: true,
+      reports: rows,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+app.get("/profit-report", verifyToken, async (req, res) => {
+  try {
+    const shopId = req.user.shop_id;
+
+    const [rows] = await db.query(
+      `
+      SELECT
+        COALESCE(SUM(bi.total),0) AS total_sales,
+        COALESCE(SUM(bi.buying_price * bi.quantity),0) AS total_buying,
+        COALESCE(SUM(bi.profit),0) AS total_profit,
+        COALESCE(SUM(bi.quantity),0) AS total_qty
+      FROM bill_items bi
+      INNER JOIN bills b
+        ON b.id = bi.bill_id
+      WHERE b.shop_id = ?
+      `,
+      [shopId]
+    );
+
+    res.json({
+      success: true,
+      report: rows[0],
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
 app.post("/login", async (req, res) => {
   try {
     const { shop_id, username, password } = req.body;
@@ -212,6 +582,7 @@ app.post("/login", async (req, res) => {
         u.username,
         u.password,
         u.role,
+        u.status,
         s.shop_name
        FROM users u
        INNER JOIN shops s ON s.id = u.shop_id
@@ -229,10 +600,14 @@ app.post("/login", async (req, res) => {
 
     const user = users[0];
 
-    const isMatch = await bcrypt.compare(
-      password,
-      user.password
-    );
+    if (user.status === "inactive") {
+      return res.status(401).json({
+        success: false,
+        message: "Staff account disabled",
+      });
+    }
+
+    const isMatch = await bcrypt.compare(password, user.password);
 
     if (!isMatch) {
       return res.status(401).json({
