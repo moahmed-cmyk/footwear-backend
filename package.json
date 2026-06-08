@@ -1,10 +1,10 @@
 {
   "name": "footwear-saas-backend",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "server.cjs",
   "scripts": {
-    "start": "node server.js",
-  "dev": "nodemon server.js"
+    "start": "node server.cjs",
+  "dev": "nodemon server.cjs"
   },
   "keywords": [],
   "author": "",

@@ -36,6 +36,7 @@ app.get("/", async (req, res) => {
   }
 });
 
+
 app.get("/net-profit", verifyToken, async (req, res) => {
   try {
     const shopId = req.user.shop_id;
