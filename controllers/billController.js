@@ -299,19 +299,30 @@ exports.updateBill = async (req, res) => {
 exports.getBills = async (req, res) => {
   try {
     const shop_id = req.user.shop_id;
+    const user_id = req.user.user_id;
+    const role = (req.user.role || "").toLowerCase();
 
-    const [bills] = await db.query(
-      `SELECT 
+    let query = `
+      SELECT 
         b.*,
         u.username AS created_by_name,
         eu.username AS edited_by_name
-       FROM bills b
-       LEFT JOIN users u ON b.created_by = u.id
-       LEFT JOIN users eu ON b.edited_by = eu.id
-       WHERE b.shop_id = ?
-       ORDER BY b.id DESC`,
-      [shop_id]
-    );
+      FROM bills b
+      LEFT JOIN users u ON b.created_by = u.id
+      LEFT JOIN users eu ON b.edited_by = eu.id
+      WHERE b.shop_id = ?
+    `;
+
+    const params = [shop_id];
+
+    if (role !== "owner") {
+      query += ` AND b.created_by = ?`;
+      params.push(user_id);
+    }
+
+    query += ` ORDER BY b.id DESC`;
+
+    const [bills] = await db.query(query, params);
 
     for (const bill of bills) {
       const [items] = await db.query(
