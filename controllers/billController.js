@@ -8,15 +8,11 @@ exports.createBill = async (req, res) => {
 
     const shop_id = req.user.shop_id;
     const created_by = req.user.user_id;
-
     const { customer_name, discount, items } = req.body;
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       await connection.rollback();
-      return res.status(400).json({
-        success: false,
-        message: "Bill items are required",
-      });
+      return res.status(400).json({ success: false, message: "Bill items are required" });
     }
 
     let grandTotal = 0;
@@ -35,16 +31,9 @@ exports.createBill = async (req, res) => {
     const finalTotal = grandTotal - discountAmount;
 
     const [billResult] = await connection.query(
-      `INSERT INTO bills 
-       (shop_id, customer_name, total, discount, created_by)
+      `INSERT INTO bills (shop_id, customer_name, total, discount, created_by)
        VALUES (?, ?, ?, ?, ?)`,
-      [
-        shop_id,
-        customer_name || "",
-        finalTotal < 0 ? 0 : finalTotal,
-        discountAmount,
-        created_by,
-      ]
+      [shop_id, customer_name || "", finalTotal < 0 ? 0 : finalTotal, discountAmount, created_by]
     );
 
     const billId = billResult.insertId;
@@ -54,21 +43,15 @@ exports.createBill = async (req, res) => {
       const quantity = Number(item.quantity || 0);
       const sellingPrice = Number(item.selling_price || 0);
       const buyingPrice = Number(item.buying_price || 0);
-      const total = quantity * sellingPrice;
-      const profit = (sellingPrice - buyingPrice) * quantity;
 
       const [productRows] = await connection.query(
-        `SELECT id, name, stock FROM products
-         WHERE id = ? AND shop_id = ?`,
+        `SELECT id, name, stock FROM products WHERE id = ? AND shop_id = ?`,
         [productId, shop_id]
       );
 
       if (productRows.length === 0) {
         await connection.rollback();
-        return res.status(404).json({
-          success: false,
-          message: `Product not found: ${productId}`,
-        });
+        return res.status(404).json({ success: false, message: `Product not found: ${productId}` });
       }
 
       const product = productRows[0];
@@ -81,26 +64,18 @@ exports.createBill = async (req, res) => {
         });
       }
 
+      const total = quantity * sellingPrice;
+      const profit = (sellingPrice - buyingPrice) * quantity;
+
       await connection.query(
         `INSERT INTO bill_items
          (bill_id, product_id, product_name, quantity, selling_price, buying_price, total, profit)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          billId,
-          productId,
-          product.name,
-          quantity,
-          sellingPrice,
-          buyingPrice,
-          total,
-          profit,
-        ]
+        [billId, productId, product.name, quantity, sellingPrice, buyingPrice, total, profit]
       );
 
       await connection.query(
-        `UPDATE products
-         SET stock = stock - ?
-         WHERE id = ? AND shop_id = ?`,
+        `UPDATE products SET stock = stock - ? WHERE id = ? AND shop_id = ?`,
         [quantity, productId, shop_id]
       );
     }
@@ -116,11 +91,7 @@ exports.createBill = async (req, res) => {
     });
   } catch (error) {
     await connection.rollback();
-
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+    return res.status(500).json({ success: false, error: error.message });
   } finally {
     connection.release();
   }
@@ -135,61 +106,45 @@ exports.updateBill = async (req, res) => {
     const billId = req.params.id;
     const shop_id = req.user.shop_id;
     const edited_by = req.user.user_id;
-
     const { customer_name, discount, items } = req.body;
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       await connection.rollback();
-      return res.status(400).json({
-        success: false,
-        message: "Bill items are required",
-      });
+      return res.status(400).json({ success: false, message: "Bill items are required" });
     }
 
     const [oldBills] = await connection.query(
-      `SELECT * FROM bills
-       WHERE id = ? AND shop_id = ?`,
+      `SELECT * FROM bills WHERE id = ? AND shop_id = ?`,
       [billId, shop_id]
     );
 
     if (oldBills.length === 0) {
       await connection.rollback();
-      return res.status(404).json({
-        success: false,
-        message: "Bill not found",
-      });
+      return res.status(404).json({ success: false, message: "Bill not found" });
     }
 
     const oldBill = oldBills[0];
 
     if (req.user.role !== "owner" && oldBill.created_by !== req.user.user_id) {
       await connection.rollback();
-      return res.status(403).json({
-        success: false,
-        message: "You can edit only your own bill",
-      });
+      return res.status(403).json({ success: false, message: "You can edit only your own bill" });
     }
 
     const [oldItems] = await connection.query(
-      `SELECT product_id, quantity
-       FROM bill_items
-       WHERE bill_id = ?`,
+      `SELECT product_id, quantity FROM bill_items WHERE bill_id = ?`,
       [billId]
     );
 
     for (const item of oldItems) {
-      await connection.query(
-        `UPDATE products
-         SET stock = stock + ?
-         WHERE id = ? AND shop_id = ?`,
-        [item.quantity, item.product_id, shop_id]
-      );
+      if (item.product_id) {
+        await connection.query(
+          `UPDATE products SET stock = stock + ? WHERE id = ? AND shop_id = ?`,
+          [item.quantity, item.product_id, shop_id]
+        );
+      }
     }
 
-    await connection.query(
-      `DELETE FROM bill_items WHERE bill_id = ?`,
-      [billId]
-    );
+    await connection.query(`DELETE FROM bill_items WHERE bill_id = ?`, [billId]);
 
     let grandTotal = 0;
     let totalProfit = 0;
@@ -201,17 +156,13 @@ exports.updateBill = async (req, res) => {
       const buyingPrice = Number(item.buying_price || 0);
 
       const [productRows] = await connection.query(
-        `SELECT id, name, stock FROM products
-         WHERE id = ? AND shop_id = ?`,
+        `SELECT id, name, stock FROM products WHERE id = ? AND shop_id = ?`,
         [productId, shop_id]
       );
 
       if (productRows.length === 0) {
         await connection.rollback();
-        return res.status(404).json({
-          success: false,
-          message: `Product not found: ${productId}`,
-        });
+        return res.status(404).json({ success: false, message: `Product not found: ${productId}` });
       }
 
       const product = productRows[0];
@@ -234,22 +185,11 @@ exports.updateBill = async (req, res) => {
         `INSERT INTO bill_items
          (bill_id, product_id, product_name, quantity, selling_price, buying_price, total, profit)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          billId,
-          productId,
-          product.name,
-          quantity,
-          sellingPrice,
-          buyingPrice,
-          total,
-          profit,
-        ]
+        [billId, productId, product.name, quantity, sellingPrice, buyingPrice, total, profit]
       );
 
       await connection.query(
-        `UPDATE products
-         SET stock = stock - ?
-         WHERE id = ? AND shop_id = ?`,
+        `UPDATE products SET stock = stock - ? WHERE id = ? AND shop_id = ?`,
         [quantity, productId, shop_id]
       );
     }
@@ -259,19 +199,9 @@ exports.updateBill = async (req, res) => {
 
     await connection.query(
       `UPDATE bills
-       SET customer_name = ?,
-           total = ?,
-           discount = ?,
-           edited_by = ?
+       SET customer_name = ?, total = ?, discount = ?, edited_by = ?, edited_at = CURRENT_TIMESTAMP
        WHERE id = ? AND shop_id = ?`,
-      [
-        customer_name || "",
-        finalTotal < 0 ? 0 : finalTotal,
-        discountAmount,
-        edited_by,
-        billId,
-        shop_id,
-      ]
+      [customer_name || "", finalTotal < 0 ? 0 : finalTotal, discountAmount, edited_by, billId, shop_id]
     );
 
     await connection.commit();
@@ -286,11 +216,7 @@ exports.updateBill = async (req, res) => {
     });
   } catch (error) {
     await connection.rollback();
-
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+    return res.status(500).json({ success: false, error: error.message });
   } finally {
     connection.release();
   }
@@ -326,9 +252,7 @@ exports.getBills = async (req, res) => {
 
     for (const bill of bills) {
       const [items] = await db.query(
-        `SELECT * FROM bill_items
-         WHERE bill_id = ?
-         ORDER BY id ASC`,
+        `SELECT * FROM bill_items WHERE bill_id = ? ORDER BY id ASC`,
         [bill.id]
       );
 
@@ -341,12 +265,11 @@ exports.getBills = async (req, res) => {
       bills,
     });
   } catch (error) {
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+    return res.status(500).json({ success: false, error: error.message });
   }
-  exports.deleteBill = async (req, res) => {
+};
+
+exports.deleteBill = async (req, res) => {
   const connection = await db.getConnection();
 
   try {
@@ -385,9 +308,7 @@ exports.getBills = async (req, res) => {
     for (const item of items) {
       if (item.product_id) {
         await connection.query(
-          `UPDATE products
-           SET stock = stock + ?
-           WHERE id = ? AND shop_id = ?`,
+          `UPDATE products SET stock = stock + ? WHERE id = ? AND shop_id = ?`,
           [item.quantity, item.product_id, shop_id]
         );
       }
@@ -408,13 +329,8 @@ exports.getBills = async (req, res) => {
     });
   } catch (error) {
     await connection.rollback();
-
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+    return res.status(500).json({ success: false, error: error.message });
   } finally {
     connection.release();
   }
-};
 };
