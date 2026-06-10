@@ -346,4 +346,75 @@ exports.getBills = async (req, res) => {
       error: error.message,
     });
   }
+  exports.deleteBill = async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const billId = req.params.id;
+    const shop_id = req.user.shop_id;
+    const role = (req.user.role || "").toLowerCase();
+
+    if (role !== "owner") {
+      await connection.rollback();
+      return res.status(403).json({
+        success: false,
+        message: "Only owner can delete bills",
+      });
+    }
+
+    const [billRows] = await connection.query(
+      `SELECT * FROM bills WHERE id = ? AND shop_id = ?`,
+      [billId, shop_id]
+    );
+
+    if (billRows.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({
+        success: false,
+        message: "Bill not found",
+      });
+    }
+
+    const [items] = await connection.query(
+      `SELECT product_id, quantity FROM bill_items WHERE bill_id = ?`,
+      [billId]
+    );
+
+    for (const item of items) {
+      if (item.product_id) {
+        await connection.query(
+          `UPDATE products
+           SET stock = stock + ?
+           WHERE id = ? AND shop_id = ?`,
+          [item.quantity, item.product_id, shop_id]
+        );
+      }
+    }
+
+    await connection.query(`DELETE FROM bill_items WHERE bill_id = ?`, [billId]);
+
+    await connection.query(
+      `DELETE FROM bills WHERE id = ? AND shop_id = ?`,
+      [billId, shop_id]
+    );
+
+    await connection.commit();
+
+    return res.json({
+      success: true,
+      message: "Bill Deleted and Stock Restored",
+    });
+  } catch (error) {
+    await connection.rollback();
+
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  } finally {
+    connection.release();
+  }
+};
 };
