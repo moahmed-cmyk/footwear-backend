@@ -8,7 +8,6 @@ const db = require("./config/db");
 const verifyToken = require("./middleware/authMiddleware");
 const productRoutes = require("./routes/productRoutes");
 const billRoutes = require("./routes/billRoutes");
-// const reportRoutes = require("./routes/reportRoutes");
 
 dotenv.config();
 
@@ -19,7 +18,6 @@ app.use(express.json());
 
 app.use("/", productRoutes);
 app.use("/", billRoutes);
-// app.use("/", reportRoutes);
 
 app.get("/", async (req, res) => {
   try {
