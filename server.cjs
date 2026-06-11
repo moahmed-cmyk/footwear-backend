@@ -584,7 +584,9 @@ app.post("/login", async (req, res) => {
         u.password,
         u.role,
         u.status,
-        s.shop_name
+       s.shop_name,
+s.subscription_status,
+s.subscription_end_date
        FROM users u
        INNER JOIN shops s ON s.id = u.shop_id
        WHERE u.shop_id = ? AND u.username = ?
@@ -600,6 +602,21 @@ app.post("/login", async (req, res) => {
     }
 
     const user = users[0];
+
+    const today = new Date();
+const endDate = user.subscription_end_date
+  ? new Date(user.subscription_end_date)
+  : null;
+
+if (
+  user.subscription_status !== "active" ||
+  (endDate && endDate < today)
+) {
+  return res.status(403).json({
+    success: false,
+    message: "Subscription expired. Please renew your plan.",
+  });
+}
 
     if (user.status === "inactive") {
       return res.status(401).json({
