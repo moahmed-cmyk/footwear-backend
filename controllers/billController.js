@@ -78,6 +78,22 @@ exports.createBill = async (req, res) => {
         `UPDATE products SET stock = stock - ? WHERE id = ? AND shop_id = ?`,
         [quantity, productId, shop_id]
       );
+      const newStock = product.stock - quantity;
+
+if (newStock <= 5) {
+  await connection.query(
+    `INSERT INTO notifications
+     (shop_id, title, message, type)
+     VALUES (?, ?, ?, ?)`,
+    [
+      shop_id,
+      "Low Stock Alert",
+      `${product.name} stock only ${newStock} left`,
+      "low_stock",
+    ]
+  );
+}
+
     }
 
     await connection.query(
