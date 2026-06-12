@@ -608,6 +608,58 @@ app.get("/subscription-status", verifyToken, async (req, res) => {
   }
 });
 
+app.get("/notifications", verifyToken, async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      `SELECT *
+       FROM notifications
+       WHERE shop_id = ?
+       ORDER BY id DESC
+       LIMIT 50`,
+      [req.user.shop_id]
+    );
+
+    const [countRows] = await db.query(
+      `SELECT COUNT(*) AS unread_count
+       FROM notifications
+       WHERE shop_id = ? AND is_read = 0`,
+      [req.user.shop_id]
+    );
+
+    res.json({
+      success: true,
+      unread_count: countRows[0].unread_count,
+      notifications: rows,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+app.put("/notifications/read-all", verifyToken, async (req, res) => {
+  try {
+    await db.query(
+      `UPDATE notifications
+       SET is_read = 1
+       WHERE shop_id = ?`,
+      [req.user.shop_id]
+    );
+
+    res.json({
+      success: true,
+      message: "Notifications marked as read",
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
 app.post("/login", async (req, res) => {
   try {
     const { shop_id, username, password } = req.body;
