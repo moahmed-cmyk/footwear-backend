@@ -80,6 +80,18 @@ exports.createBill = async (req, res) => {
       );
     }
 
+    await connection.query(
+  `INSERT INTO notifications
+   (shop_id, title, message, type)
+   VALUES (?, ?, ?, ?)`,
+  [
+    shop_id,
+    "New Bill Created",
+    `Bill #${billId} created. Amount ₹${finalTotal}`,
+    "bill",
+  ]
+);
+
     await connection.commit();
 
     return res.json({
