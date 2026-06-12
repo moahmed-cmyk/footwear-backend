@@ -565,6 +565,49 @@ app.get("/profit-report", verifyToken, async (req, res) => {
   }
 });
 
+app.get("/subscription-status", verifyToken, async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      `SELECT
+        subscription_status,
+        subscription_end_date
+       FROM shops
+       WHERE id = ?`,
+      [req.user.shop_id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Shop not found",
+      });
+    }
+
+    const shop = rows[0];
+
+    const today = new Date();
+    const endDate = shop.subscription_end_date
+      ? new Date(shop.subscription_end_date)
+      : null;
+
+    const expired =
+      shop.subscription_status !== "active" ||
+      (endDate && endDate < today);
+
+    res.json({
+      success: true,
+      expired,
+      subscription_status: shop.subscription_status,
+      subscription_end_date: shop.subscription_end_date,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
 app.post("/login", async (req, res) => {
   try {
     const { shop_id, username, password } = req.body;
