@@ -40,6 +40,20 @@ app.get("/", async (req, res) => {
 app.get("/net-profit", verifyToken, async (req, res) => {
   try {
     const shopId = req.user.shop_id;
+    const { startDate, endDate } = req.query;
+
+    let billWhere = "WHERE b.shop_id = ?";
+    let expenseWhere = "WHERE shop_id = ?";
+
+    const billParams = [shopId];
+    const expenseParams = [shopId];
+
+    if (startDate && endDate) {
+      billWhere += " AND DATE(b.created_at) BETWEEN ? AND ?";
+      expenseWhere += " AND DATE(created_at) BETWEEN ? AND ?";
+      billParams.push(startDate, endDate);
+      expenseParams.push(startDate, endDate);
+    }
 
     const [profitRows] = await db.query(
       `
@@ -47,11 +61,10 @@ app.get("/net-profit", verifyToken, async (req, res) => {
         COALESCE(SUM(bi.total), 0) AS total_sales,
         COALESCE(SUM(bi.profit), 0) AS total_profit
       FROM bill_items bi
-      INNER JOIN bills b
-        ON b.id = bi.bill_id
-      WHERE b.shop_id = ?
+      INNER JOIN bills b ON b.id = bi.bill_id
+      ${billWhere}
       `,
-      [shopId]
+      billParams
     );
 
     const [expenseRows] = await db.query(
@@ -59,9 +72,9 @@ app.get("/net-profit", verifyToken, async (req, res) => {
       SELECT
         COALESCE(SUM(amount), 0) AS total_expenses
       FROM expenses
-      WHERE shop_id = ?
+      ${expenseWhere}
       `,
-      [shopId]
+      expenseParams
     );
 
     const totalSales = Number(profitRows[0].total_sales || 0);
