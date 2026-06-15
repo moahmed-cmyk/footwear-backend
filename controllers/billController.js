@@ -8,7 +8,7 @@ exports.createBill = async (req, res) => {
 
     const shop_id = req.user.shop_id;
     const created_by = req.user.user_id;
-    const { customer_name, discount, items } = req.body;
+   const { customer_name, discount, payment_type, items } = req.body;
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       await connection.rollback();
