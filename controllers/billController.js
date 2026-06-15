@@ -31,9 +31,17 @@ exports.createBill = async (req, res) => {
     const finalTotal = grandTotal - discountAmount;
 
     const [billResult] = await connection.query(
-      `INSERT INTO bills (shop_id, customer_name, total, discount, created_by)
-       VALUES (?, ?, ?, ?, ?)`,
-      [shop_id, customer_name || "", finalTotal < 0 ? 0 : finalTotal, discountAmount, created_by]
+      `INSERT INTO bills
+(shop_id, customer_name, total, discount, payment_type, created_by)
+VALUES (?, ?, ?, ?, ?, ?)`,
+     [
+  shop_id,
+  customer_name || "",
+  finalTotal < 0 ? 0 : finalTotal,
+  discountAmount,
+  payment_type || "cash",
+  created_by
+]
     );
 
     const billId = billResult.insertId;
@@ -227,9 +235,21 @@ exports.updateBill = async (req, res) => {
 
     await connection.query(
       `UPDATE bills
-       SET customer_name = ?, total = ?, discount = ?, edited_by = ?, edited_at = CURRENT_TIMESTAMP
-       WHERE id = ? AND shop_id = ?`,
-      [customer_name || "", finalTotal < 0 ? 0 : finalTotal, discountAmount, edited_by, billId, shop_id]
+SET customer_name = ?,
+    total = ?,
+    discount = ?,
+    payment_type = ?,
+    edited_by = ?,
+    edited_at = CURRENT_TIMESTAMP`,
+      [
+  customer_name || "",
+  finalTotal < 0 ? 0 : finalTotal,
+  discountAmount,
+  payment_type || "cash",
+  edited_by,
+  billId,
+  shop_id
+]
     );
 
     await connection.commit();
