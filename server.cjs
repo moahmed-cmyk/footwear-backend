@@ -359,7 +359,18 @@ app.get("/dashboard", verifyToken, async (req, res) => {
         COALESCE(SUM(bi.profit), 0) AS total_profit,
         COALESCE(SUM(b.discount), 0) AS total_discount,
         COALESCE(SUM(bi.quantity), 0) AS total_items,
-        COUNT(DISTINCT b.id) AS total_bills
+        COUNT(DISTINCT b.id) AS total_bills,
+
+        COALESCE(SUM(CASE 
+          WHEN LOWER(b.payment_type) = 'cash' THEN b.total 
+          ELSE 0 
+        END), 0) AS cash_sales,
+
+        COALESCE(SUM(CASE 
+          WHEN LOWER(b.payment_type) = 'upi' THEN b.total 
+          ELSE 0 
+        END), 0) AS upi_sales
+
       FROM bills b
       LEFT JOIN bill_items bi ON bi.bill_id = b.id
       WHERE b.shop_id = ?
@@ -401,6 +412,10 @@ app.get("/dashboard", verifyToken, async (req, res) => {
         total_discount: salesRows[0].total_discount,
         total_items: salesRows[0].total_items,
         total_bills: salesRows[0].total_bills,
+
+        cash_sales: salesRows[0].cash_sales,
+        upi_sales: salesRows[0].upi_sales,
+
         total_products: productRows[0].total_products,
         low_stock_count: productRows[0].low_stock_count,
         top_product: topRows.length > 0 ? topRows[0].product_name : "No sales",
