@@ -352,21 +352,20 @@ app.get("/dashboard", verifyToken, async (req, res) => {
   try {
     const shopId = req.user.shop_id;
 
-    const [salesRows] = await db.query(
-      `
-      SELECT
-        COALESCE(SUM(bi.total), 0) AS total_sales,
-        COALESCE(SUM(bi.profit), 0) AS total_profit,
-        COALESCE(SUM(b.discount), 0) AS total_discount,
-        COALESCE(SUM(bi.quantity), 0) AS total_items,
-        COUNT(DISTINCT b.id) AS total_bills,
-
-      FROM bills b
-      LEFT JOIN bill_items bi ON bi.bill_id = b.id
-      WHERE b.shop_id = ?
-      `,
-      [shopId]
-    );
+   const [salesRows] = await db.query(
+  `
+  SELECT
+    COALESCE(SUM(bi.total), 0) AS total_sales,
+    COALESCE(SUM(bi.profit), 0) AS total_profit,
+    COALESCE(SUM(b.discount), 0) AS total_discount,
+    COALESCE(SUM(bi.quantity), 0) AS total_items,
+    COUNT(DISTINCT b.id) AS total_bills
+  FROM bills b
+  LEFT JOIN bill_items bi ON bi.bill_id = b.id
+  WHERE b.shop_id = ?
+  `,
+  [shopId]
+);
 
     const [cashRows] = await db.query(
   `
