@@ -18,6 +18,12 @@ exports.addProduct = async (req, res) => {
         message: "Product name is required",
       });
     }
+    if (!name || name.trim() === "") {
+  return res.status(400).json({
+    success: false,
+    message: "Product name is required",
+  });
+}
 
     const cleanName = name.trim();
     const cleanSize = (size || "").trim();
@@ -25,16 +31,29 @@ exports.addProduct = async (req, res) => {
 
     const newStock = Number(stock || 0);
 
-    const [existing] = await db.query(
-      `SELECT id, stock
-       FROM products
-       WHERE shop_id = ?
-       AND LOWER(name) = LOWER(?)
-       AND LOWER(size) = LOWER(?)
-       AND IFNULL(barcode, '') = ?
-       LIMIT 1`,
-      [shop_id, cleanName, cleanSize, cleanBarcode]
-    );
+   const normalizedName = cleanName
+  .toLowerCase()
+  .replace(/\s+/g, "");
+
+const normalizedSize = cleanSize
+  .toLowerCase()
+  .replace(/\s+/g, "");
+
+const [existing] = await db.query(
+  `SELECT id, stock
+   FROM products
+   WHERE shop_id = ?
+   AND REPLACE(LOWER(name), ' ', '') = ?
+   AND REPLACE(LOWER(size), ' ', '') = ?
+   AND CAST(mrp AS DECIMAL(10,2)) = CAST(? AS DECIMAL(10,2))
+   LIMIT 1`,
+  [
+    shop_id,
+    normalizedName,
+    normalizedSize,
+    Number(mrp || 0),
+  ]
+);
 
     if (existing.length > 0) {
       const productId = existing[0].id;
