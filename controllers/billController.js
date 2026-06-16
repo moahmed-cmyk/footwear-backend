@@ -234,22 +234,23 @@ exports.updateBill = async (req, res) => {
     const finalTotal = grandTotal - discountAmount;
 
     await connection.query(
-      `UPDATE bills
-SET customer_name = ?,
-    total = ?,
-    discount = ?,
-    payment_type = ?,
-    edited_by = ?,
-    edited_at = CURRENT_TIMESTAMP`,
-      [
-  customer_name || "",
-  finalTotal < 0 ? 0 : finalTotal,
-  discountAmount,
-  payment_type || "cash",
-  edited_by,
-  billId,
-  shop_id
-]
+   `UPDATE bills
+   SET customer_name = ?,
+       total = ?,
+       discount = ?,
+       payment_type = ?,
+       edited_by = ?,
+       edited_at = CURRENT_TIMESTAMP
+   WHERE id = ? AND shop_id = ?`,
+  [
+    customer_name || "",
+    finalTotal < 0 ? 0 : finalTotal,
+    discountAmount,
+    payment_type || "cash",
+    edited_by,
+    billId,
+    shop_id,
+  ]
     );
 
     await connection.commit();
