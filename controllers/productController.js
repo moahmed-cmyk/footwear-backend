@@ -1,5 +1,4 @@
 const db = require("../config/db");
-
 exports.addProduct = async (req, res) => {
   try {
     const shop_id = req.user.shop_id;
@@ -20,18 +19,61 @@ exports.addProduct = async (req, res) => {
       });
     }
 
+    const cleanName = name.trim();
+    const cleanSize = (size || "").trim();
+    const cleanBarcode = (barcode || "").trim();
+
+    const newStock = Number(stock || 0);
+
+    const [existing] = await db.query(
+      `SELECT id, stock
+       FROM products
+       WHERE shop_id = ?
+       AND LOWER(name) = LOWER(?)
+       AND LOWER(size) = LOWER(?)
+       AND IFNULL(barcode, '') = ?
+       LIMIT 1`,
+      [shop_id, cleanName, cleanSize, cleanBarcode]
+    );
+
+    if (existing.length > 0) {
+      const productId = existing[0].id;
+
+      await db.query(
+        `UPDATE products
+         SET stock = stock + ?,
+             mrp = ?,
+             buying_price = ?
+         WHERE id = ? AND shop_id = ?`,
+        [
+          newStock,
+          mrp || 0,
+          buying_price || 0,
+          productId,
+          shop_id,
+        ]
+      );
+
+      return res.json({
+        success: true,
+        message: "Product already exists. Stock updated successfully",
+        product_id: productId,
+        updated: true,
+      });
+    }
+
     const [result] = await db.query(
       `INSERT INTO products 
        (shop_id, barcode, name, size, mrp, buying_price, stock)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
         shop_id,
-        barcode || "",
-        name,
-        size || "",
+        cleanBarcode,
+        cleanName,
+        cleanSize,
         mrp || 0,
         buying_price || 0,
-        stock || 0,
+        newStock,
       ]
     );
 
@@ -39,6 +81,7 @@ exports.addProduct = async (req, res) => {
       success: true,
       message: "Product Added",
       product_id: result.insertId,
+      updated: false,
     });
   } catch (error) {
     return res.status(500).json({
