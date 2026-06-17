@@ -355,6 +355,24 @@ app.get("/sales-report", verifyToken, async (req, res) => {
 app.get("/dashboard", verifyToken, async (req, res) => {
   try {
     const shopId = req.user.shop_id;
+    const { filter, startDate, endDate } = req.query;
+
+let dateWhere = "";
+let dateParams = [];
+
+if (filter === "today") {
+  dateWhere = " AND DATE(b.created_at) = CURDATE()";
+}
+
+if (filter === "month") {
+  dateWhere =
+    " AND MONTH(b.created_at) = MONTH(CURDATE()) AND YEAR(b.created_at) = YEAR(CURDATE())";
+}
+
+if (filter === "custom" && startDate && endDate) {
+  dateWhere = " AND DATE(b.created_at) BETWEEN ? AND ?";
+  dateParams = [startDate, endDate];
+}
 
    const [salesRows] = await db.query(
   `
@@ -365,9 +383,10 @@ app.get("/dashboard", verifyToken, async (req, res) => {
     COUNT(DISTINCT b.id) AS total_bills
   FROM bills b
   LEFT JOIN bill_items bi ON bi.bill_id = b.id
-  WHERE b.shop_id = ?
-  `,
-  [shopId]
+ WHERE b.shop_id = ?
+${dateWhere}
+`,
+[shopId, ...dateParams]
 
   
 );
@@ -473,6 +492,7 @@ upi_sales: upiRows[0].upi_sales,
 app.get("/low-stock", verifyToken, async (req, res) => {
   try {
     const shopId = req.user.shop_id;
+
 
     const [products] = await db.query(
       `
@@ -616,9 +636,10 @@ app.get("/profit-report", verifyToken, async (req, res) => {
       FROM bill_items bi
       INNER JOIN bills b
         ON b.id = bi.bill_id
-      WHERE b.shop_id = ?
-      `,
-      [shopId]
+    WHERE b.shop_id = ?
+${dateWhere}
+`,
+[shopId, ...dateParams]
     );
 
     res.json({
