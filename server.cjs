@@ -432,7 +432,7 @@ const [upiRows] = await db.query(
       success: true,
       dashboard: {
         total_sales: totalSalesRows[0].total_sales,
-       total_profit: actualProfit,
+      total_profit: salesRows[0].total_profit,
         total_discount: salesRows[0].total_discount,
         total_items: salesRows[0].total_items,
         total_bills: salesRows[0].total_bills,
