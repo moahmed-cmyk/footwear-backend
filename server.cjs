@@ -59,13 +59,17 @@ app.get("/net-profit", verifyToken, async (req, res) => {
       `
       SELECT
     COALESCE(SUM(DISTINCT b.total), 0) AS total_sales,
-        COALESCE(SUM(bi.profit), 0) AS total_profit
+       COALESCE(SUM(bi.profit), 0) AS item_profit,
       FROM bill_items bi
       INNER JOIN bills b ON b.id = bi.bill_id
       ${billWhere}
       `,
       billParams
     );
+
+    const actualProfit =
+  Number(salesRows[0].item_profit || 0) -
+  Number(salesRows[0].total_discount || 0);
 
     const [expenseRows] = await db.query(
       `
@@ -355,7 +359,7 @@ app.get("/dashboard", verifyToken, async (req, res) => {
    const [salesRows] = await db.query(
   `
   SELECT
-    COALESCE(SUM(bi.profit), 0) AS total_profit,
+  COALESCE(SUM(bi.profit), 0) - COALESCE(SUM(DISTINCT b.discount), 0) AS total_profit,
     COALESCE(SUM(b.discount), 0) AS total_discount,
     COALESCE(SUM(bi.quantity), 0) AS total_items,
     COUNT(DISTINCT b.id) AS total_bills
@@ -428,7 +432,7 @@ const [upiRows] = await db.query(
       success: true,
       dashboard: {
         total_sales: totalSalesRows[0].total_sales,
-        total_profit: salesRows[0].total_profit,
+       total_profit: actualProfit,
         total_discount: salesRows[0].total_discount,
         total_items: salesRows[0].total_items,
         total_bills: salesRows[0].total_bills,
