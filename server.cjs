@@ -392,6 +392,8 @@ const [totalSalesRows] = await db.query(
   [shopId]
 );
 
+
+
 const [upiRows] = await db.query(
   `
   SELECT COALESCE(SUM(total),0) AS upi_sales
@@ -401,6 +403,19 @@ const [upiRows] = await db.query(
   `,
   [shopId]
 );
+
+const [expenseRows] = await db.query(
+  `
+  SELECT COALESCE(SUM(amount),0) AS total_expenses
+  FROM expenses
+  WHERE shop_id = ?
+  `,
+  [shopId]
+);
+
+const netProfit =
+  Number(salesRows[0].total_profit || 0) -
+  Number(expenseRows[0].total_expenses || 0);
 
     const [productRows] = await db.query(
       `
@@ -432,7 +447,8 @@ const [upiRows] = await db.query(
       success: true,
       dashboard: {
         total_sales: totalSalesRows[0].total_sales,
-      total_profit: salesRows[0].total_profit,
+      total_profit: netProfit,
+total_expenses: expenseRows[0].total_expenses,
         total_discount: salesRows[0].total_discount,
         total_items: salesRows[0].total_items,
         total_bills: salesRows[0].total_bills,
