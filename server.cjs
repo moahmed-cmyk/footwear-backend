@@ -382,7 +382,7 @@ if (filter === "custom" && startDate && endDate) {
     COALESCE(SUM(bi.quantity), 0) AS total_items,
     COUNT(DISTINCT b.id) AS total_bills
   FROM bills b
-  LEFT JOIN bill_items bi ON bi.bill_id = b.id
+  LEFT JOIN bill_items bi ON bi.bill_id = b.
  WHERE b.shop_id = ?
 ${dateWhere}
 `,
