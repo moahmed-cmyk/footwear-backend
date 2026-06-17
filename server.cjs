@@ -355,86 +355,77 @@ app.get("/sales-report", verifyToken, async (req, res) => {
 app.get("/dashboard", verifyToken, async (req, res) => {
   try {
     const shopId = req.user.shop_id;
-    const { filter, startDate, endDate } = req.query;
+    const { filter = "today", startDate, endDate } = req.query;
 
-let dateWhere = "";
-let dateParams = [];
+    let billDateWhere = "";
+    let billParams = [shopId];
 
-if (filter === "today") {
-  dateWhere = " AND DATE(b.created_at) = CURDATE()";
-}
+    let expenseDateWhere = "";
+    let expenseParams = [shopId];
 
-if (filter === "month") {
-  dateWhere =
-    " AND MONTH(b.created_at) = MONTH(CURDATE()) AND YEAR(b.created_at) = YEAR(CURDATE())";
-}
+    if (filter === "today") {
+      billDateWhere = " AND DATE(b.created_at) = CURDATE()";
+      expenseDateWhere = " AND DATE(created_at) = CURDATE()";
+    }
 
-if (filter === "custom" && startDate && endDate) {
-  dateWhere = " AND DATE(b.created_at) BETWEEN ? AND ?";
-  dateParams = [startDate, endDate];
-}
+    if (filter === "month") {
+      billDateWhere =
+        " AND MONTH(b.created_at) = MONTH(CURDATE()) AND YEAR(b.created_at) = YEAR(CURDATE())";
+      expenseDateWhere =
+        " AND MONTH(created_at) = MONTH(CURDATE()) AND YEAR(created_at) = YEAR(CURDATE())";
+    }
 
-   const [salesRows] = await db.query(
-  `
-  SELECT
-  COALESCE(SUM(bi.profit), 0) - COALESCE(SUM(DISTINCT b.discount), 0) AS total_profit,
-    COALESCE(SUM(b.discount), 0) AS total_discount,
-    COALESCE(SUM(bi.quantity), 0) AS total_items,
-    COUNT(DISTINCT b.id) AS total_bills
-  FROM bills b
-  LEFT JOIN bill_items bi ON bi.bill_id = b.
- WHERE b.shop_id = ?
-${dateWhere}
-`,
-[shopId, ...dateParams]
+    if (filter === "custom" && startDate && endDate) {
+      billDateWhere = " AND DATE(b.created_at) BETWEEN ? AND ?";
+      expenseDateWhere = " AND DATE(created_at) BETWEEN ? AND ?";
+      billParams.push(startDate, endDate);
+      expenseParams.push(startDate, endDate);
+    }
 
-  
-);
+    const [salesRows] = await db.query(
+      `
+      SELECT
+        COALESCE(SUM(bi.profit), 0) AS item_profit,
+        COALESCE(SUM(bi.quantity), 0) AS total_items,
+        COUNT(DISTINCT b.id) AS total_bills
+      FROM bills b
+      LEFT JOIN bill_items bi ON bi.bill_id = b.id
+      WHERE b.shop_id = ?
+      ${billDateWhere}
+      `,
+      billParams
+    );
 
-const [totalSalesRows] = await db.query(
-  `
-  SELECT COALESCE(SUM(total),0) AS total_sales
-  FROM bills
-  WHERE shop_id = ?
-  `,
-  [shopId]
-);
+    const [billRows] = await db.query(
+      `
+      SELECT
+        COALESCE(SUM(total), 0) AS total_sales,
+        COALESCE(SUM(discount), 0) AS total_discount,
+        COALESCE(SUM(CASE WHEN LOWER(payment_type) = 'cash' THEN total ELSE 0 END), 0) AS cash_sales,
+        COALESCE(SUM(CASE WHEN LOWER(payment_type) = 'upi' THEN total ELSE 0 END), 0) AS upi_sales
+      FROM bills b
+      WHERE b.shop_id = ?
+      ${billDateWhere}
+      `,
+      billParams
+    );
 
+    const [expenseRows] = await db.query(
+      `
+      SELECT COALESCE(SUM(amount), 0) AS total_expenses
+      FROM expenses
+      WHERE shop_id = ?
+      ${expenseDateWhere}
+      `,
+      expenseParams
+    );
 
-    const [cashRows] = await db.query(
-  `
-  SELECT COALESCE(SUM(total),0) AS cash_sales
-  FROM bills
-  WHERE shop_id = ?
-  AND LOWER(payment_type) = 'cash'
-  `,
-  [shopId]
-);
+    const grossProfit =
+      Number(salesRows[0].item_profit || 0) -
+      Number(billRows[0].total_discount || 0);
 
-
-
-const [upiRows] = await db.query(
-  `
-  SELECT COALESCE(SUM(total),0) AS upi_sales
-  FROM bills
-  WHERE shop_id = ?
-  AND LOWER(payment_type) = 'upi'
-  `,
-  [shopId]
-);
-
-const [expenseRows] = await db.query(
-  `
-  SELECT COALESCE(SUM(amount),0) AS total_expenses
-  FROM expenses
-  WHERE shop_id = ?
-  `,
-  [shopId]
-);
-
-const netProfit =
-  Number(salesRows[0].total_profit || 0) -
-  Number(expenseRows[0].total_expenses || 0);
+    const netProfit =
+      grossProfit - Number(expenseRows[0].total_expenses || 0);
 
     const [productRows] = await db.query(
       `
@@ -455,26 +446,25 @@ const netProfit =
       FROM bill_items bi
       INNER JOIN bills b ON b.id = bi.bill_id
       WHERE b.shop_id = ?
+      ${billDateWhere}
       GROUP BY bi.product_name
       ORDER BY total_qty DESC
       LIMIT 1
       `,
-      [shopId]
+      billParams
     );
 
     res.json({
       success: true,
       dashboard: {
-        total_sales: totalSalesRows[0].total_sales,
-      total_profit: netProfit,
-total_expenses: expenseRows[0].total_expenses,
-        total_discount: salesRows[0].total_discount,
+        total_sales: billRows[0].total_sales,
+        cash_sales: billRows[0].cash_sales,
+        upi_sales: billRows[0].upi_sales,
+        total_discount: billRows[0].total_discount,
+        total_expenses: expenseRows[0].total_expenses,
+        total_profit: netProfit,
         total_items: salesRows[0].total_items,
         total_bills: salesRows[0].total_bills,
-
-      cash_sales: cashRows[0].cash_sales,
-upi_sales: upiRows[0].upi_sales,
-
         total_products: productRows[0].total_products,
         low_stock_count: productRows[0].low_stock_count,
         top_product: topRows.length > 0 ? topRows[0].product_name : "No sales",
@@ -488,7 +478,6 @@ upi_sales: upiRows[0].upi_sales,
     });
   }
 });
-
 app.get("/low-stock", verifyToken, async (req, res) => {
   try {
     const shopId = req.user.shop_id;
