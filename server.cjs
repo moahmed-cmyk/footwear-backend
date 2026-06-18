@@ -144,10 +144,13 @@ app.post("/expenses", verifyToken, async (req, res) => {
 app.get("/expenses", verifyToken, async (req, res) => {
   try {
     const [expenses] = await db.query(
-      `SELECT *
-       FROM expenses
-       WHERE shop_id = ?
-       ORDER BY expense_date DESC, id DESC`,
+      `SELECT 
+          e.*,
+          u.username AS created_by_name
+       FROM expenses e
+       LEFT JOIN users u ON u.id = e.created_by
+       WHERE e.shop_id = ?
+       ORDER BY e.expense_date DESC, e.id DESC`,
       [req.user.shop_id]
     );
 
@@ -162,7 +165,6 @@ app.get("/expenses", verifyToken, async (req, res) => {
     });
   }
 });
-
 app.post("/register-shop", async (req, res) => {
   const connection = await db.getConnection();
 
