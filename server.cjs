@@ -167,6 +167,89 @@ app.get("/expenses", verifyToken, async (req, res) => {
     });
   }
 });
+
+app.put("/expenses/:id", verifyToken, async (req, res) => {
+  try {
+    const expenseId = req.params.id;
+    const shopId = req.user.shop_id;
+    const userId = req.user.user_id;
+    const role = (req.user.role || "").toLowerCase();
+
+    const { title, amount } = req.body;
+
+    if (!title || !amount) {
+      return res.status(400).json({
+        success: false,
+        message: "Title and amount required",
+      });
+    }
+
+    let query = `
+      UPDATE expenses
+      SET title = ?, amount = ?
+      WHERE id = ? AND shop_id = ?
+    `;
+
+    const params = [title, amount, expenseId, shopId];
+
+    if (role !== "owner") {
+      query += ` AND created_by = ?`;
+      params.push(userId);
+    }
+
+    const [result] = await db.query(query, params);
+
+    if (result.affectedRows === 0) {
+      return res.status(403).json({
+        success: false,
+        message: "Not allowed or expense not found",
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Expense updated successfully",
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+app.delete("/expenses/:id", verifyToken, async (req, res) => {
+  try {
+    if ((req.user.role || "").toLowerCase() !== "owner") {
+      return res.status(403).json({
+        success: false,
+        message: "Only owner can delete expense",
+      });
+    }
+
+    const [result] = await db.query(
+      `DELETE FROM expenses WHERE id = ? AND shop_id = ?`,
+      [req.params.id, req.user.shop_id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Expense not found",
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Expense deleted successfully",
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
 app.post("/register-shop", async (req, res) => {
   const connection = await db.getConnection();
 
