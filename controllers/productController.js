@@ -1,4 +1,5 @@
 const db = require("../config/db");
+const XLSX = require("xlsx");
 exports.addProduct = async (req, res) => {
   try {
     const shop_id = req.user.shop_id;
@@ -183,6 +184,102 @@ exports.updateProduct = async (req, res) => {
     });
   } catch (error) {
     return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+};
+
+exports.importProducts = async (req, res) => {
+  try {
+    const shop_id = req.user.shop_id;
+
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: "Excel file required",
+      });
+    }
+
+    const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet);
+
+    const {
+  addProduct,
+  getProducts,
+  updateProduct,
+  deleteProduct,
+  importProducts,
+} = require("../controllers/productController");
+
+    let imported = 0;
+    let updated = 0;
+    let skipped = 0;
+    let failed = 0;
+
+    for (const row of rows) {
+      try {
+        const barcode = (row.Barcode || row.barcode || "").toString().trim();
+        const name = (row["Product Name"] || row.name || row.Name || "").toString().trim();
+        const size = (row.Size || row.size || "").toString().trim();
+        const mrp = Number(row.MRP || row.mrp || 0);
+        const buying_price = Number(row["Buying Price"] || row.buying_price || 0);
+        const stock = Number(row.Stock || row.stock || 0);
+
+        if (!name) {
+          skipped++;
+          continue;
+        }
+
+        const normalizedName = name.toLowerCase().replace(/\s+/g, "");
+        const normalizedSize = size.toLowerCase().replace(/\s+/g, "");
+
+        const [existing] = await db.query(
+          `SELECT id
+           FROM products
+           WHERE shop_id = ?
+           AND REPLACE(LOWER(name), ' ', '') = ?
+           AND REPLACE(LOWER(size), ' ', '') = ?
+           AND CAST(mrp AS DECIMAL(10,2)) = CAST(? AS DECIMAL(10,2))
+           LIMIT 1`,
+          [shop_id, normalizedName, normalizedSize, mrp]
+        );
+
+        if (existing.length > 0) {
+          await db.query(
+            `UPDATE products
+             SET stock = stock + ?,
+                 barcode = ?,
+                 buying_price = ?
+             WHERE id = ? AND shop_id = ?`,
+            [stock, barcode, buying_price, existing[0].id, shop_id]
+          );
+          updated++;
+        } else {
+          await db.query(
+            `INSERT INTO products
+             (shop_id, barcode, name, size, mrp, buying_price, stock)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [shop_id, barcode, name, size, mrp, buying_price, stock]
+          );
+          imported++;
+        }
+      } catch (e) {
+        failed++;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: "Excel import completed",
+      imported,
+      updated,
+      skipped,
+      failed,
+    });
+  } catch (error) {
+    res.status(500).json({
       success: false,
       error: error.message,
     });
