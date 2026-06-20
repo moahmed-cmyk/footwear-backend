@@ -217,6 +217,49 @@ exports.importProducts = async (req, res) => {
     let updated = 0;
     let skipped = 0;
     let failed = 0;
+    function getValue(row, keys) {
+  const map = {};
+
+  for (const key in row) {
+    map[key.toLowerCase().trim()] = row[key];
+  }
+
+  for (const key of keys) {
+    const value = map[key.toLowerCase().trim()];
+    if (value !== undefined) {
+      return value;
+    }
+  }
+
+  return "";
+}
+
+const barcode = getValue(row, ["barcode"]).toString().trim();
+
+const name = getValue(row, [
+  "product name",
+  "name",
+]).toString().trim();
+
+const size = getValue(row, [
+  "size",
+]).toString().trim();
+
+const mrp = Number(
+  getValue(row, ["mrp"]) || 0,
+);
+
+const buying_price = Number(
+  getValue(row, [
+    "buying price",
+    "buying_price",
+    "buyingprice",
+  ]) || 0,
+);
+
+const stock = Number(
+  getValue(row, ["stock"]) || 0,
+);
 
     for (const row of rows) {
       try {
