@@ -8,6 +8,7 @@ const db = require("./config/db");
 const verifyToken = require("./middleware/authMiddleware");
 const productRoutes = require("./routes/productRoutes");
 const billRoutes = require("./routes/billRoutes");
+const dashboardRoutes = require("./routes/dashboardRoutes");
 
 dotenv.config();
 
@@ -16,6 +17,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+app.use("/api", dashboardRoutes);
 app.use("/", productRoutes);
 app.use("/", billRoutes);
 
