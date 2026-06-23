@@ -17,7 +17,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.use("/api", dashboardRoutes);
+app.use("/", dashboardRoutes);
 app.use("/", productRoutes);
 app.use("/", billRoutes);
 
