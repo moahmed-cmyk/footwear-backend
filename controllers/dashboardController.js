@@ -1,140 +1,124 @@
 const db = require("../config/db");
 
+function percentChange(today, yesterday) {
+  today = Number(today || 0);
+  yesterday = Number(yesterday || 0);
+
+  if (yesterday === 0 && today > 0) return 100;
+  if (yesterday === 0 && today === 0) return 0;
+
+  return Number((((today - yesterday) / yesterday) * 100).toFixed(1));
+}
+
 exports.getDashboardV2 = async (req, res) => {
   try {
-    const shop_id = req.user.shop_id;
+    const shopId = req.user.shop_id;
 
-    const [todayRows] = await db.query(
-      `
-      SELECT 
-        COALESCE(SUM(total), 0) AS todaySales,
-        COUNT(*) AS todayBills
+    const [today] = await db.query(`
+      SELECT
+        COALESCE(SUM(total),0) AS sales,
+        COUNT(*) AS bills,
+        COALESCE(SUM(discount),0) AS discount
       FROM bills
       WHERE shop_id = ?
       AND DATE(created_at) = CURDATE()
-      `,
-      [shop_id]
-    );
+    `, [shopId]);
 
-    const [yesterdayRows] = await db.query(
-      `
-      SELECT COALESCE(SUM(total), 0) AS yesterdaySales
+    const [yesterday] = await db.query(`
+      SELECT
+        COALESCE(SUM(total),0) AS sales,
+        COUNT(*) AS bills
       FROM bills
       WHERE shop_id = ?
       AND DATE(created_at) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)
-      `,
-      [shop_id]
-    );
+    `, [shopId]);
 
-    const [profitRows] = await db.query(
-      `
-      SELECT COALESCE(SUM(bi.profit), 0) AS netProfit
+    const [todayProfit] = await db.query(`
+      SELECT COALESCE(SUM(bi.profit),0) AS profit
       FROM bill_items bi
       INNER JOIN bills b ON b.id = bi.bill_id
       WHERE b.shop_id = ?
       AND DATE(b.created_at) = CURDATE()
-      `,
-      [shop_id]
-    );
+    `, [shopId]);
 
-    const [lowStockCountRows] = await db.query(
-      `
-      SELECT COUNT(*) AS lowStockItems
+    const [yesterdayProfit] = await db.query(`
+      SELECT COALESCE(SUM(bi.profit),0) AS profit
+      FROM bill_items bi
+      INNER JOIN bills b ON b.id = bi.bill_id
+      WHERE b.shop_id = ?
+      AND DATE(b.created_at) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+    `, [shopId]);
+
+    const [lowStock] = await db.query(`
+      SELECT COUNT(*) AS count
       FROM products
       WHERE shop_id = ?
-      AND CAST(stock AS UNSIGNED) <= 5
-      `,
-      [shop_id]
-    );
+      AND stock <= 5
+    `, [shopId]);
 
-    const [recentBills] = await db.query(
-      `
-      SELECT 
-        id,
-        customer_name,
-        total,
-        DATE_FORMAT(created_at, '%h:%i %p') AS bill_time
+    const [recentBills] = await db.query(`
+      SELECT id, customer_name, total, created_at
       FROM bills
       WHERE shop_id = ?
-      ORDER BY created_at DESC
+      ORDER BY id DESC
       LIMIT 3
-      `,
-      [shop_id]
-    );
+    `, [shopId]);
 
-    const [lowStockList] = await db.query(
-      `
-      SELECT 
-        id,
-        name,
-        brand,
-        size,
-        stock
+    const [lowStockList] = await db.query(`
+      SELECT id, name, stock
       FROM products
       WHERE shop_id = ?
-      AND CAST(stock AS UNSIGNED) <= 5
-      ORDER BY CAST(stock AS UNSIGNED) ASC
+      AND stock <= 5
+      ORDER BY stock ASC
       LIMIT 3
-      `,
-      [shop_id]
-    );
+    `, [shopId]);
 
-    const [chartRows] = await db.query(
-      `
-      SELECT 
-        HOUR(created_at) AS hour,
-        COALESCE(SUM(total), 0) AS sales
+    const [chartRows] = await db.query(`
+      SELECT HOUR(created_at) AS hour, COALESCE(SUM(total),0) AS sales
       FROM bills
       WHERE shop_id = ?
       AND DATE(created_at) = CURDATE()
       GROUP BY HOUR(created_at)
       ORDER BY hour ASC
-      `,
-      [shop_id]
-    );
+    `, [shopId]);
 
-    const todaySales = Number(todayRows[0].todaySales || 0);
-    const yesterdaySales = Number(yesterdayRows[0].yesterdaySales || 0);
-
-    let salesGrowth = 0;
-    if (yesterdaySales > 0) {
-      salesGrowth = ((todaySales - yesterdaySales) / yesterdaySales) * 100;
-    }
-
-    return res.json({
+    res.json({
       success: true,
       data: {
-        todaySales,
-        todayBills: Number(todayRows[0].todayBills || 0),
-        netProfit: Number(profitRows[0].netProfit || 0),
-        lowStockItems: Number(lowStockCountRows[0].lowStockItems || 0),
-        salesGrowth: Number(salesGrowth.toFixed(1)),
+        todaySales: Number(today[0].sales || 0),
+        todayBills: Number(today[0].bills || 0),
+        netProfit: Number(todayProfit[0].profit || 0),
+        lowStockItems: Number(lowStock[0].count || 0),
 
-        recentBills: recentBills.map((bill) => ({
-          id: bill.id,
-          invoiceNo: `INV-${String(bill.id).padStart(3, "0")}`,
-          customerName: bill.customer_name || "Walk-in Customer",
-          total: Number(bill.total || 0),
-          time: bill.bill_time || "",
+        salesGrowth: percentChange(today[0].sales, yesterday[0].sales),
+        billsGrowth: percentChange(today[0].bills, yesterday[0].bills),
+        profitGrowth: percentChange(todayProfit[0].profit, yesterdayProfit[0].profit),
+
+        recentBills: recentBills.map(b => ({
+          id: b.id,
+          invoiceNo: `INV-${b.id}`,
+          customerName: b.customer_name || "Walk-in Customer",
+          total: Number(b.total || 0),
+          time: new Date(b.created_at).toLocaleTimeString("en-IN", {
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
         })),
 
-        lowStockList: lowStockList.map((item) => ({
-          id: item.id,
-          name: item.name,
-          brand: item.brand,
-          size: item.size,
-          stock: Number(item.stock || 0),
+        lowStockList: lowStockList.map(p => ({
+          id: p.id,
+          name: p.name,
+          stock: Number(p.stock || 0),
         })),
 
-        chart: chartRows.map((item) => ({
-          hour: Number(item.hour),
-          sales: Number(item.sales || 0),
+        chart: chartRows.map(c => ({
+          hour: Number(c.hour),
+          sales: Number(c.sales || 0),
         })),
       },
     });
   } catch (error) {
-    console.error("Dashboard V2 Error:", error);
-    return res.status(500).json({
+    res.status(500).json({
       success: false,
       message: "Dashboard data fetch failed",
       error: error.message,
