@@ -112,16 +112,9 @@ exports.getDashboardV2 = async (req, res) => {
       `,
       [shopId]
     );
-console.log("Dashboard chartRows:", chartRows);
-console.log({
-  todaySales,
-  yesterdaySales,
-  todayBills,
-  yesterdayBills,
-  todayProfit,
-  yesterdayProfit,
-});
-    const [chartRows] = await db.query(
+
+    const [chartRows] = await db.query( 
+        
       `
       SELECT
         HOUR(DATE_ADD(created_at, INTERVAL 330 MINUTE)) AS hour,
@@ -133,6 +126,7 @@ console.log({
       ORDER BY hour ASC
       `,
       [shopId]
+      
     );
 
     const todaySales = Number(todayRows[0].sales || 0);
@@ -143,6 +137,15 @@ console.log({
 
     const todayProfit = Number(todayProfitRows[0].profit || 0);
     const yesterdayProfit = Number(yesterdayProfitRows[0].profit || 0);
+    console.log("Dashboard Debug:", {
+  todaySales,
+  yesterdaySales,
+  todayBills,
+  yesterdayBills,
+  todayProfit,
+  yesterdayProfit,
+  chartRows,
+});
 
     return res.json({
       success: true,
