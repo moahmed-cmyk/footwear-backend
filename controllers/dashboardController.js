@@ -112,7 +112,15 @@ exports.getDashboardV2 = async (req, res) => {
       `,
       [shopId]
     );
-
+console.log("Dashboard chartRows:", chartRows);
+console.log({
+  todaySales,
+  yesterdaySales,
+  todayBills,
+  yesterdayBills,
+  todayProfit,
+  yesterdayProfit,
+});
     const [chartRows] = await db.query(
       `
       SELECT
