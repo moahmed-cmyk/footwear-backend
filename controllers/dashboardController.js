@@ -15,19 +15,23 @@ exports.getDashboardV2 = async (req, res) => {
     const shopId = req.user.shop_id;
 
     const todayDateSql = `
-      DATE(created_at) = DATE(NOW())
+      DATE(DATE_ADD(created_at, INTERVAL 330 MINUTE)) =
+      DATE(DATE_ADD(NOW(), INTERVAL 330 MINUTE))
     `;
 
     const yesterdayDateSql = `
-      DATE(created_at) = DATE_SUB(DATE(NOW()), INTERVAL 1 DAY)
+      DATE(DATE_ADD(created_at, INTERVAL 330 MINUTE)) =
+      DATE(DATE_SUB(DATE_ADD(NOW(), INTERVAL 330 MINUTE), INTERVAL 1 DAY))
     `;
 
     const billTodayDateSql = `
-      DATE(b.created_at) = DATE(NOW())
+      DATE(DATE_ADD(b.created_at, INTERVAL 330 MINUTE)) =
+      DATE(DATE_ADD(NOW(), INTERVAL 330 MINUTE))
     `;
 
     const billYesterdayDateSql = `
-      DATE(b.created_at) = DATE_SUB(DATE(NOW()), INTERVAL 1 DAY)
+      DATE(DATE_ADD(b.created_at, INTERVAL 330 MINUTE)) =
+      DATE(DATE_SUB(DATE_ADD(NOW(), INTERVAL 330 MINUTE), INTERVAL 1 DAY))
     `;
 
     const [todayRows] = await db.query(
@@ -112,12 +116,12 @@ exports.getDashboardV2 = async (req, res) => {
     const [chartRows] = await db.query(
       `
       SELECT
-        HOUR(created_at) AS hour,
+        HOUR(DATE_ADD(created_at, INTERVAL 330 MINUTE)) AS hour,
         COALESCE(SUM(total), 0) AS sales
       FROM bills
       WHERE shop_id = ?
       AND ${todayDateSql}
-      GROUP BY HOUR(created_at)
+      GROUP BY HOUR(DATE_ADD(created_at, INTERVAL 330 MINUTE))
       ORDER BY hour ASC
       `,
       [shopId]
@@ -131,16 +135,6 @@ exports.getDashboardV2 = async (req, res) => {
 
     const todayProfit = Number(todayProfitRows[0].profit || 0);
     const yesterdayProfit = Number(yesterdayProfitRows[0].profit || 0);
-
-    console.log("Dashboard Debug:", {
-      todaySales,
-      yesterdaySales,
-      todayBills,
-      yesterdayBills,
-      todayProfit,
-      yesterdayProfit,
-      chartRows,
-    });
 
     return res.json({
       success: true,
