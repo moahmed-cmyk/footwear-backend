@@ -172,16 +172,16 @@ exports.getDashboardV2 = async (req, res) => {
       [shopId]
     );
 
-    const chartSelect =
-      filter === "today"
-        ? `
-          HOUR(DATE_ADD(created_at, INTERVAL 330 MINUTE)) AS hour,
-          DATE_FORMAT(DATE_ADD(created_at, INTERVAL 330 MINUTE), '%h %p') AS label
-        `
-        : `
-          NULL AS hour,
-          DATE_FORMAT(DATE_ADD(created_at, INTERVAL 330 MINUTE), '%d %b') AS label
-        `;
+const chartSelect =
+  filter === "today"
+    ? `
+      HOUR(DATE_ADD(created_at, INTERVAL 330 MINUTE)) AS hour,
+      MIN(DATE_FORMAT(DATE_ADD(created_at, INTERVAL 330 MINUTE), '%h %p')) AS label
+    `
+    : `
+      NULL AS hour,
+      MIN(DATE_FORMAT(DATE_ADD(created_at, INTERVAL 330 MINUTE), '%d %b')) AS label
+    `;
 
     const chartGroup =
       filter === "today"
@@ -256,6 +256,6 @@ exports.getDashboardV2 = async (req, res) => {
       success: false,
       message: "Dashboard data fetch failed",
       error: error.message,
-    });
+    }); 
   }
 };
