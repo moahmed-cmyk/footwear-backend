@@ -113,19 +113,19 @@ exports.getDashboardV2 = async (req, res) => {
       [shopId]
     );
 
-    const [chartRows] = await db.query(
-      `
-      SELECT
-        HOUR(DATE_ADD(created_at, INTERVAL 330 MINUTE)) AS hour,
-        COALESCE(SUM(total), 0) AS sales
-      FROM bills
-      WHERE shop_id = ?
-      AND ${todayDateSql}
-      GROUP BY HOUR(DATE_ADD(created_at, INTERVAL 330 MINUTE))
-      ORDER BY hour ASC
-      `,
-      [shopId]
-    );
+   const [chartRows] = await db.query(
+  `
+  SELECT
+    HOUR(created_at) AS hour,
+    COALESCE(SUM(total), 0) AS sales
+  FROM bills
+  WHERE shop_id = ?
+  AND ${todayDateSql}
+  GROUP BY HOUR(created_at)
+  ORDER BY hour ASC
+  `,
+  [shopId]
+);
 
     const todaySales = Number(todayRows[0].sales || 0);
     const yesterdaySales = Number(yesterdayRows[0].sales || 0);
