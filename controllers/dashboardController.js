@@ -1,91 +1,150 @@
 const db = require("../config/db");
 
-function percentChange(today, yesterday) {
-  today = Number(today || 0);
-  yesterday = Number(yesterday || 0);
+function percentChange(current, previous) {
+  current = Number(current || 0);
+  previous = Number(previous || 0);
 
-  if (yesterday === 0 && today > 0) return 100;
-  if (yesterday === 0 && today === 0) return 0;
+  if (previous === 0 && current > 0) return 100;
+  if (previous === 0 && current === 0) return 0;
 
-  return Number((((today - yesterday) / yesterday) * 100).toFixed(1));
+  return Number((((current - previous) / previous) * 100).toFixed(1));
+}
+
+function normalizeFilter(filter) {
+  if (filter === "month") return "month";
+  if (filter === "custom") return "custom";
+  return "today";
+}
+
+function buildCurrentRange(filter, startDate, endDate) {
+  if (filter === "month") {
+    return {
+      billWhere: `
+        DATE(DATE_ADD(created_at, INTERVAL 330 MINUTE)) >= DATE_FORMAT(DATE(DATE_ADD(NOW(), INTERVAL 330 MINUTE)), '%Y-%m-01')
+        AND DATE(DATE_ADD(created_at, INTERVAL 330 MINUTE)) <= DATE(DATE_ADD(NOW(), INTERVAL 330 MINUTE))
+      `,
+      itemWhere: `
+        DATE(DATE_ADD(b.created_at, INTERVAL 330 MINUTE)) >= DATE_FORMAT(DATE(DATE_ADD(NOW(), INTERVAL 330 MINUTE)), '%Y-%m-01')
+        AND DATE(DATE_ADD(b.created_at, INTERVAL 330 MINUTE)) <= DATE(DATE_ADD(NOW(), INTERVAL 330 MINUTE))
+      `,
+      params: [],
+    };
+  }
+
+  if (filter === "custom" && startDate && endDate) {
+    return {
+      billWhere: `DATE(DATE_ADD(created_at, INTERVAL 330 MINUTE)) BETWEEN ? AND ?`,
+      itemWhere: `DATE(DATE_ADD(b.created_at, INTERVAL 330 MINUTE)) BETWEEN ? AND ?`,
+      params: [startDate, endDate],
+    };
+  }
+
+  return {
+    billWhere: `
+      DATE(DATE_ADD(created_at, INTERVAL 330 MINUTE)) = DATE(DATE_ADD(NOW(), INTERVAL 330 MINUTE))
+    `,
+    itemWhere: `
+      DATE(DATE_ADD(b.created_at, INTERVAL 330 MINUTE)) = DATE(DATE_ADD(NOW(), INTERVAL 330 MINUTE))
+    `,
+    params: [],
+  };
+}
+
+function buildPreviousRange(filter, startDate, endDate) {
+  if (filter === "month") {
+    return {
+      billWhere: `
+        DATE(DATE_ADD(created_at, INTERVAL 330 MINUTE)) >= DATE_FORMAT(DATE_SUB(DATE(DATE_ADD(NOW(), INTERVAL 330 MINUTE)), INTERVAL 1 MONTH), '%Y-%m-01')
+        AND DATE(DATE_ADD(created_at, INTERVAL 330 MINUTE)) < DATE_FORMAT(DATE(DATE_ADD(NOW(), INTERVAL 330 MINUTE)), '%Y-%m-01')
+      `,
+      itemWhere: `
+        DATE(DATE_ADD(b.created_at, INTERVAL 330 MINUTE)) >= DATE_FORMAT(DATE_SUB(DATE(DATE_ADD(NOW(), INTERVAL 330 MINUTE)), INTERVAL 1 MONTH), '%Y-%m-01')
+        AND DATE(DATE_ADD(b.created_at, INTERVAL 330 MINUTE)) < DATE_FORMAT(DATE(DATE_ADD(NOW(), INTERVAL 330 MINUTE)), '%Y-%m-01')
+      `,
+      params: [],
+    };
+  }
+
+  if (filter === "custom" && startDate && endDate) {
+    return {
+      billWhere: `
+        DATE(DATE_ADD(created_at, INTERVAL 330 MINUTE))
+        BETWEEN DATE_SUB(?, INTERVAL DATEDIFF(?, ?) + 1 DAY)
+        AND DATE_SUB(?, INTERVAL 1 DAY)
+      `,
+      itemWhere: `
+        DATE(DATE_ADD(b.created_at, INTERVAL 330 MINUTE))
+        BETWEEN DATE_SUB(?, INTERVAL DATEDIFF(?, ?) + 1 DAY)
+        AND DATE_SUB(?, INTERVAL 1 DAY)
+      `,
+      params: [startDate, endDate, startDate, startDate],
+    };
+  }
+
+  return {
+    billWhere: `
+      DATE(DATE_ADD(created_at, INTERVAL 330 MINUTE)) = DATE_SUB(DATE(DATE_ADD(NOW(), INTERVAL 330 MINUTE)), INTERVAL 1 DAY)
+    `,
+    itemWhere: `
+      DATE(DATE_ADD(b.created_at, INTERVAL 330 MINUTE)) = DATE_SUB(DATE(DATE_ADD(NOW(), INTERVAL 330 MINUTE)), INTERVAL 1 DAY)
+    `,
+    params: [],
+  };
 }
 
 exports.getDashboardV2 = async (req, res) => {
   try {
     const shopId = req.user.shop_id;
+    const filter = normalizeFilter(req.query.filter);
+    const startDate = req.query.startDate;
+    const endDate = req.query.endDate;
 
-    const todayDateSql = `
-      DATE(DATE_ADD(created_at, INTERVAL 330 MINUTE)) =
-      DATE(DATE_ADD(NOW(), INTERVAL 330 MINUTE))
-    `;
+    const current = buildCurrentRange(filter, startDate, endDate);
+    const previous = buildPreviousRange(filter, startDate, endDate);
 
-    const yesterdayDateSql = `
-      DATE(DATE_ADD(created_at, INTERVAL 330 MINUTE)) =
-      DATE(DATE_SUB(DATE_ADD(NOW(), INTERVAL 330 MINUTE), INTERVAL 1 DAY))
-    `;
-
-    const billTodayDateSql = `
-      DATE(DATE_ADD(b.created_at, INTERVAL 330 MINUTE)) =
-      DATE(DATE_ADD(NOW(), INTERVAL 330 MINUTE))
-    `;
-
-    const billYesterdayDateSql = `
-      DATE(DATE_ADD(b.created_at, INTERVAL 330 MINUTE)) =
-      DATE(DATE_SUB(DATE_ADD(NOW(), INTERVAL 330 MINUTE), INTERVAL 1 DAY))
-    `;
-
-    const [todayRows] = await db.query(
+    const [currentRows] = await db.query(
       `
-      SELECT
-        COALESCE(SUM(total), 0) AS sales,
-        COUNT(*) AS bills
+      SELECT COALESCE(SUM(total), 0) AS sales, COUNT(*) AS bills
       FROM bills
-      WHERE shop_id = ?
-      AND ${todayDateSql}
+      WHERE shop_id = ? AND ${current.billWhere}
       `,
-      [shopId]
+      [shopId, ...current.params]
     );
 
-    const [yesterdayRows] = await db.query(
+    const [previousRows] = await db.query(
       `
-      SELECT
-        COALESCE(SUM(total), 0) AS sales,
-        COUNT(*) AS bills
+      SELECT COALESCE(SUM(total), 0) AS sales, COUNT(*) AS bills
       FROM bills
-      WHERE shop_id = ?
-      AND ${yesterdayDateSql}
+      WHERE shop_id = ? AND ${previous.billWhere}
       `,
-      [shopId]
+      [shopId, ...previous.params]
     );
 
-    const [todayProfitRows] = await db.query(
+    const [currentProfitRows] = await db.query(
       `
       SELECT COALESCE(SUM(bi.profit), 0) AS profit
       FROM bill_items bi
       INNER JOIN bills b ON b.id = bi.bill_id
-      WHERE b.shop_id = ?
-      AND ${billTodayDateSql}
+      WHERE b.shop_id = ? AND ${current.itemWhere}
       `,
-      [shopId]
+      [shopId, ...current.params]
     );
 
-    const [yesterdayProfitRows] = await db.query(
+    const [previousProfitRows] = await db.query(
       `
       SELECT COALESCE(SUM(bi.profit), 0) AS profit
       FROM bill_items bi
       INNER JOIN bills b ON b.id = bi.bill_id
-      WHERE b.shop_id = ?
-      AND ${billYesterdayDateSql}
+      WHERE b.shop_id = ? AND ${previous.itemWhere}
       `,
-      [shopId]
+      [shopId, ...previous.params]
     );
 
     const [lowStockRows] = await db.query(
       `
       SELECT COUNT(*) AS count
       FROM products
-      WHERE shop_id = ?
-      AND CAST(stock AS UNSIGNED) <= 5
+      WHERE shop_id = ? AND CAST(stock AS UNSIGNED) <= 5
       `,
       [shopId]
     );
@@ -113,40 +172,59 @@ exports.getDashboardV2 = async (req, res) => {
       [shopId]
     );
 
-   const [chartRows] = await db.query(
-  `
-  SELECT
-    HOUR(created_at) AS hour,
-    COALESCE(SUM(total), 0) AS sales
-  FROM bills
-  WHERE shop_id = ?
-  AND ${todayDateSql}
-  GROUP BY HOUR(created_at)
-  ORDER BY hour ASC
-  `,
-  [shopId]
-);
+    const chartSelect =
+      filter === "today"
+        ? `
+          HOUR(DATE_ADD(created_at, INTERVAL 330 MINUTE)) AS hour,
+          DATE_FORMAT(DATE_ADD(created_at, INTERVAL 330 MINUTE), '%h %p') AS label
+        `
+        : `
+          NULL AS hour,
+          DATE_FORMAT(DATE_ADD(created_at, INTERVAL 330 MINUTE), '%d %b') AS label
+        `;
 
-    const todaySales = Number(todayRows[0].sales || 0);
-    const yesterdaySales = Number(yesterdayRows[0].sales || 0);
+    const chartGroup =
+      filter === "today"
+        ? `HOUR(DATE_ADD(created_at, INTERVAL 330 MINUTE))`
+        : `DATE(DATE_ADD(created_at, INTERVAL 330 MINUTE))`;
 
-    const todayBills = Number(todayRows[0].bills || 0);
-    const yesterdayBills = Number(yesterdayRows[0].bills || 0);
+    const [chartRows] = await db.query(
+      `
+      SELECT
+        ${chartSelect},
+        COALESCE(SUM(total), 0) AS sales
+      FROM bills
+      WHERE shop_id = ? AND ${current.billWhere}
+      GROUP BY ${chartGroup}
+      ORDER BY ${chartGroup} ASC
+      `,
+      [shopId, ...current.params]
+    );
 
-    const todayProfit = Number(todayProfitRows[0].profit || 0);
-    const yesterdayProfit = Number(yesterdayProfitRows[0].profit || 0);
+    const currentSales = Number(currentRows[0].sales || 0);
+    const previousSales = Number(previousRows[0].sales || 0);
+
+    const currentBills = Number(currentRows[0].bills || 0);
+    const previousBills = Number(previousRows[0].bills || 0);
+
+    const currentProfit = Number(currentProfitRows[0].profit || 0);
+    const previousProfit = Number(previousProfitRows[0].profit || 0);
 
     return res.json({
       success: true,
       data: {
-        todaySales,
-        todayBills,
-        netProfit: todayProfit,
+        filter,
+        startDate: filter === "custom" ? startDate : null,
+        endDate: filter === "custom" ? endDate : null,
+
+        todaySales: currentSales,
+        todayBills: currentBills,
+        netProfit: currentProfit,
         lowStockItems: Number(lowStockRows[0].count || 0),
 
-        salesGrowth: percentChange(todaySales, yesterdaySales),
-        billsGrowth: percentChange(todayBills, yesterdayBills),
-        profitGrowth: percentChange(todayProfit, yesterdayProfit),
+        salesGrowth: percentChange(currentSales, previousSales),
+        billsGrowth: percentChange(currentBills, previousBills),
+        profitGrowth: percentChange(currentProfit, previousProfit),
 
         recentBills: recentBills.map((b) => ({
           id: b.id,
@@ -166,7 +244,8 @@ exports.getDashboardV2 = async (req, res) => {
         })),
 
         chart: chartRows.map((c) => ({
-          hour: Number(c.hour),
+          hour: c.hour === null ? null : Number(c.hour),
+          label: c.label?.toString() || "",
           sales: Number(c.sales || 0),
         })),
       },
