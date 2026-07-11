@@ -4,6 +4,7 @@ const dotenv = require("dotenv");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
+
 const db = require("./config/db");
 const verifyToken = require("./middleware/authMiddleware");
 const productRoutes = require("./routes/productRoutes");
@@ -20,6 +21,8 @@ app.use(express.json());
 app.use("/", dashboardRoutes);
 app.use("/", productRoutes);
 app.use("/", billRoutes);
+app.use("/", purchaseRoutes);
+const purchaseRoutes = require("./routes/purchaseRoutes");
 
 app.get("/", async (req, res) => {
   try {

@@ -15,4 +15,4 @@
   router.put("/bills/:id", verifyToken, updateBill);
   router.delete("/bills/:id", verifyToken, deleteBill);
 
-  module.exports = router;
+  module.exports = router;  
