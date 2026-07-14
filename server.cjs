@@ -41,72 +41,72 @@ app.use("/", purchaseRoutes);
     }
   });
 
+app.get("/net-profit", verifyToken, async (req, res) => {
+  try {
+    const shopId = req.user.shop_id;
+    const { startDate, endDate } = req.query;
 
-  app.get("/net-profit", verifyToken, async (req, res) => {
-    try {
-      const shopId = req.user.shop_id;
-      const { startDate, endDate } = req.query;
+    let billWhere = "WHERE b.shop_id = ?";
+    let expenseWhere = "WHERE shop_id = ?";
 
-      let billWhere = "WHERE b.shop_id = ?";
-      let expenseWhere = "WHERE shop_id = ?";
+    const billParams = [shopId];
+    const expenseParams = [shopId];
 
-      const billParams = [shopId];
-      const expenseParams = [shopId];
+    if (startDate && endDate) {
+      billWhere += " AND DATE(b.created_at) BETWEEN ? AND ?";
+      expenseWhere += " AND DATE(expense_date) BETWEEN ? AND ?";
 
-      if (startDate && endDate) {
-        billWhere += " AND DATE(b.created_at) BETWEEN ? AND ?";
-        expenseWhere += " AND DATE(created_at) BETWEEN ? AND ?";
-        billParams.push(startDate, endDate);
-        expenseParams.push(startDate, endDate);
-      }
-
-      const [profitRows] = await db.query(
-        `
-        SELECT
-      COALESCE(SUM(DISTINCT b.total), 0) AS total_sales,
-        COALESCE(SUM(bi.profit), 0) AS item_profit,
-        FROM bill_items bi
-        INNER JOIN bills b ON b.id = bi.bill_id
-        ${billWhere}
-        `,
-        billParams
-      );
-
-      const actualProfit =
-    Number(salesRows[0].item_profit || 0) -
-    Number(salesRows[0].total_discount || 0);
-
-      const [expenseRows] = await db.query(
-        `
-        SELECT
-          COALESCE(SUM(amount), 0) AS total_expenses
-        FROM expenses
-        ${expenseWhere}
-        `,
-        expenseParams
-      );
-
-      const totalSales = Number(profitRows[0].total_sales || 0);
-      const totalProfit = Number(profitRows[0].total_profit || 0);
-      const totalExpenses = Number(expenseRows[0].total_expenses || 0);
-      const netProfit = totalProfit - totalExpenses;
-
-      res.json({
-        success: true,
-        report: {
-          total_sales: totalSales,
-          total_profit: totalProfit,
-          total_expenses: totalExpenses,
-          net_profit: netProfit,
-        },
-      });
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        error: error.message,
-      });
+      billParams.push(startDate, endDate);
+      expenseParams.push(startDate, endDate);
     }
-  });
+
+    const [profitRows] = await db.query(
+      `
+      SELECT
+        COALESCE(SUM(b.total), 0) AS total_sales,
+        COALESCE(SUM(bi.profit), 0) AS item_profit,
+        COALESCE(SUM(DISTINCT b.discount), 0) AS total_discount
+      FROM bills b
+      LEFT JOIN bill_items bi ON bi.bill_id = b.id
+      ${billWhere}
+      `,
+      billParams
+    );
+
+    const [expenseRows] = await db.query(
+      `
+      SELECT COALESCE(SUM(amount), 0) AS total_expenses
+      FROM expenses
+      ${expenseWhere}
+      `,
+      expenseParams
+    );
+
+    const totalSales = Number(profitRows[0].total_sales || 0);
+
+    const totalProfit =
+      Number(profitRows[0].item_profit || 0) -
+      Number(profitRows[0].total_discount || 0);
+
+    const totalExpenses = Number(expenseRows[0].total_expenses || 0);
+    const netProfit = totalProfit - totalExpenses;
+
+    res.json({
+      success: true,
+      report: {
+        total_sales: totalSales,
+        total_profit: totalProfit,
+        total_expenses: totalExpenses,
+        net_profit: netProfit,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
 
   app.post("/expenses", verifyToken, async (req, res) => {
     try {
@@ -702,39 +702,45 @@ app.use("/", purchaseRoutes);
       });
     }
   });
+app.get("/profit-report", verifyToken, async (req, res) => {
+  try {
+    const shopId = req.user.shop_id;
+    const { startDate, endDate } = req.query;
 
-  app.get("/profit-report", verifyToken, async (req, res) => {
-    try {
-      const shopId = req.user.shop_id;
+    let dateWhere = "";
+    const params = [shopId];
 
-      const [rows] = await db.query(
-        `
-        SELECT
-          COALESCE(SUM(bi.total),0) AS total_sales,
-          COALESCE(SUM(bi.buying_price * bi.quantity),0) AS total_buying,
-          COALESCE(SUM(bi.profit),0) AS total_profit,
-          COALESCE(SUM(bi.quantity),0) AS total_qty
-        FROM bill_items bi
-        INNER JOIN bills b
-          ON b.id = bi.bill_id
-      WHERE b.shop_id = ?
-  ${dateWhere}
-  `,
-  [shopId, ...dateParams]
-      );
-
-      res.json({
-        success: true,
-        report: rows[0],
-      });
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        error: error.message,
-      });
+    if (startDate && endDate) {
+      dateWhere = " AND DATE(b.created_at) BETWEEN ? AND ?";
+      params.push(startDate, endDate);
     }
-  });
 
+    const [rows] = await db.query(
+      `
+      SELECT
+        COALESCE(SUM(bi.total), 0) AS total_sales,
+        COALESCE(SUM(bi.buying_price * bi.quantity), 0) AS total_buying,
+        COALESCE(SUM(bi.profit), 0) AS total_profit,
+        COALESCE(SUM(bi.quantity), 0) AS total_qty
+      FROM bill_items bi
+      INNER JOIN bills b ON b.id = bi.bill_id
+      WHERE b.shop_id = ?
+      ${dateWhere}
+      `,
+      params
+    );
+
+    res.json({
+      success: true,
+      report: rows[0],
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
   app.get("/subscription-status", verifyToken, async (req, res) => {
     try {
       const [rows] = await db.query(
