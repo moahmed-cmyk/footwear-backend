@@ -146,11 +146,12 @@ exports.updateProduct = async (req, res) => {
       size,
       mrp,
       buying_price,
-      stock,
     } = req.body;
 
+    // Check product belongs to this shop
     const [check] = await db.query(
-      `SELECT * FROM products 
+      `SELECT id
+       FROM products
        WHERE id = ? AND shop_id = ?`,
       [productId, shop_id]
     );
@@ -162,9 +163,16 @@ exports.updateProduct = async (req, res) => {
       });
     }
 
+    // IMPORTANT:
+    // Stock is intentionally NOT updated here.
+    // Stock changes must happen through Purchase Entry / Sales.
     await db.query(
-      `UPDATE products 
-       SET barcode = ?, name = ?, size = ?, mrp = ?, buying_price = ?, stock = ?
+      `UPDATE products
+       SET barcode = ?,
+           name = ?,
+           size = ?,
+           mrp = ?,
+           buying_price = ?
        WHERE id = ? AND shop_id = ?`,
       [
         barcode || "",
@@ -172,7 +180,6 @@ exports.updateProduct = async (req, res) => {
         size || "",
         mrp || 0,
         buying_price || 0,
-        stock || 0,
         productId,
         shop_id,
       ]
@@ -183,13 +190,14 @@ exports.updateProduct = async (req, res) => {
       message: "Product Updated",
     });
   } catch (error) {
+    console.error("Update Product Error:", error);
+
     return res.status(500).json({
       success: false,
       error: error.message,
     });
   }
 };
-
 exports.importProducts = async (req, res) => {
   try {
     const shop_id = req.user.shop_id;
