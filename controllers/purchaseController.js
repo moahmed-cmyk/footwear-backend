@@ -114,24 +114,39 @@ async function findOrCreateProduct(connection, shopId, item) {
     }
   }
 
-  const normalizedName = productName
-    .toLowerCase()
-    .replace(/\s+/g, "");
+  let existing = [];
 
-  const normalizedSize = size
-    .toLowerCase()
-    .replace(/\s+/g, "");
+  // Product identity:
+  // 1. Barcode, when provided
+  // 2. Product name + size, when barcode is not provided
+  if (barcode) {
+    [existing] = await connection.query(
+      `SELECT id
+       FROM products
+       WHERE shop_id = ?
+         AND TRIM(COALESCE(barcode, '')) = ?
+       LIMIT 1`,
+      [shopId, barcode]
+    );
+  } else {
+    const normalizedName = productName
+      .toLowerCase()
+      .replace(/\s+/g, "");
 
-  const [existing] = await connection.query(
-    `SELECT id
-     FROM products
-     WHERE shop_id = ?
-       AND REPLACE(LOWER(name), ' ', '') = ?
-       AND REPLACE(LOWER(size), ' ', '') = ?
-       AND CAST(mrp AS DECIMAL(12,2)) = CAST(? AS DECIMAL(12,2))
-     LIMIT 1`,
-    [shopId, normalizedName, normalizedSize, mrp]
-  );
+    const normalizedSize = size
+      .toLowerCase()
+      .replace(/\s+/g, "");
+
+    [existing] = await connection.query(
+      `SELECT id
+       FROM products
+       WHERE shop_id = ?
+         AND REPLACE(LOWER(TRIM(name)), ' ', '') = ?
+         AND REPLACE(LOWER(TRIM(size)), ' ', '') = ?
+       LIMIT 1`,
+      [shopId, normalizedName, normalizedSize]
+    );
+  }
 
   if (existing.length > 0) {
     const productId = existing[0].id;
@@ -139,9 +154,20 @@ async function findOrCreateProduct(connection, shopId, item) {
     await connection.query(
       `UPDATE products
        SET barcode = ?,
+           name = ?,
+           size = ?,
+           mrp = ?,
            buying_price = ?
        WHERE id = ? AND shop_id = ?`,
-      [barcode, purchasePrice, productId, shopId]
+      [
+        barcode,
+        productName,
+        size,
+        mrp,
+        purchasePrice,
+        productId,
+        shopId,
+      ]
     );
 
     return productId;
@@ -170,13 +196,64 @@ async function changeStock(
   productId,
   quantityChange
 ) {
-  if (!productId || quantityChange === 0) return;
+  if (!productId || quantityChange === 0) {
+    return 0;
+  }
 
   await connection.query(
     `UPDATE products
      SET stock = GREATEST(stock + ?, 0)
      WHERE id = ? AND shop_id = ?`,
     [quantityChange, productId, shopId]
+  );
+
+  const [rows] = await connection.query(
+    `SELECT stock
+     FROM products
+     WHERE id = ? AND shop_id = ?
+     LIMIT 1`,
+    [productId, shopId]
+  );
+
+  return rows.length > 0 ? intValue(rows[0].stock) : 0;
+}
+
+async function insertStockHistory(
+  connection,
+  {
+    shopId,
+    productId,
+    type,
+    quantity,
+    balanceStock,
+    referenceId = null,
+    referenceNo = "",
+    note = "",
+  }
+) {
+  await connection.query(
+    `INSERT INTO stock_history
+     (
+       shop_id,
+       product_id,
+       type,
+       quantity,
+       balance_stock,
+       reference_id,
+       reference_no,
+       note
+     )
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      shopId,
+      productId,
+      type,
+      quantity,
+      balanceStock,
+      referenceId,
+      referenceNo,
+      note,
+    ]
   );
 }
 
@@ -186,7 +263,7 @@ async function reverseExistingCompletedStock(
   shopId
 ) {
   const [entries] = await connection.query(
-    `SELECT status
+    `SELECT status, invoice_number
      FROM purchase_entries
      WHERE id = ? AND shop_id = ?
      LIMIT 1`,
@@ -200,6 +277,8 @@ async function reverseExistingCompletedStock(
     return;
   }
 
+  const referenceNo = cleanText(entries[0].invoice_number);
+
   const [items] = await connection.query(
     `SELECT product_id, quantity
      FROM purchase_entry_items
@@ -208,12 +287,25 @@ async function reverseExistingCompletedStock(
   );
 
   for (const item of items) {
-    await changeStock(
+    const quantity = intValue(item.quantity);
+
+    const balanceStock = await changeStock(
       connection,
       shopId,
       item.product_id,
-      -intValue(item.quantity)
+      -quantity
     );
+
+    await insertStockHistory(connection, {
+      shopId,
+      productId: item.product_id,
+      type: "PURCHASE",
+      quantity: -quantity,
+      balanceStock,
+      referenceId: purchaseEntryId,
+      referenceNo,
+      note: "Purchase stock reversed",
+    });
   }
 }
 
@@ -222,6 +314,7 @@ async function insertItemsAndApplyStock({
   purchaseEntryId,
   shopId,
   status,
+  invoiceNumber,
   items,
 }) {
   for (const rawItem of items) {
@@ -232,9 +325,11 @@ async function insertItemsAndApplyStock({
     );
 
     const quantity = intValue(rawItem.quantity);
+
     const purchasePrice = numberValue(
       rawItem.purchase_price
     );
+
     const total =
       numberValue(rawItem.total) ||
       purchasePrice * quantity;
@@ -267,16 +362,30 @@ async function insertItemsAndApplyStock({
     );
 
     if (status === "completed") {
-      await changeStock(
+      const balanceStock = await changeStock(
         connection,
         shopId,
         productId,
         quantity
       );
+
+      await insertStockHistory(connection, {
+        shopId,
+        productId,
+        type: "PURCHASE",
+        quantity,
+        balanceStock,
+        referenceId: purchaseEntryId,
+        referenceNo: invoiceNumber,
+        note: "Purchase stock added",
+      });
     }
   }
 }
 
+// ===============================
+// CREATE PURCHASE ENTRY
+// ===============================
 exports.createPurchaseEntry = async (req, res) => {
   const connection = await db.getConnection();
 
@@ -296,39 +405,55 @@ exports.createPurchaseEntry = async (req, res) => {
     const supplierName = cleanText(
       req.body.supplier_name
     );
+
     const invoiceNumber = cleanText(
       req.body.invoice_number
     );
+
     const purchaseDate = cleanText(
       req.body.purchase_date
     );
+
     const notes = cleanText(req.body.notes);
+
     const status = normalizeStatus(req.body.status);
+
     const items = Array.isArray(req.body.items)
       ? req.body.items
       : [];
 
     const totalProducts = items.length;
+
     const totalQuantity = items.reduce(
-      (sum, item) => sum + intValue(item.quantity),
+      (sum, item) =>
+        sum + intValue(item.quantity),
       0
     );
-    const totalAmount = items.reduce((sum, item) => {
-      const quantity = intValue(item.quantity);
-      const price = numberValue(item.purchase_price);
 
-      return (
-        sum +
-        (numberValue(item.total) || price * quantity)
-      );
-    }, 0);
+    const totalAmount = items.reduce(
+      (sum, item) => {
+        const quantity = intValue(item.quantity);
+
+        const price = numberValue(
+          item.purchase_price
+        );
+
+        return (
+          sum +
+          (numberValue(item.total) ||
+            price * quantity)
+        );
+      },
+      0
+    );
 
     await connection.beginTransaction();
 
     const [duplicate] = await connection.query(
       `SELECT id
        FROM purchase_entries
-       WHERE shop_id = ? AND invoice_number = ?
+       WHERE shop_id = ?
+       AND invoice_number = ?
        LIMIT 1`,
       [shopId, invoiceNumber]
     );
@@ -377,6 +502,7 @@ exports.createPurchaseEntry = async (req, res) => {
       purchaseEntryId: result.insertId,
       shopId,
       status,
+      invoiceNumber,
       items,
     });
 
@@ -393,6 +519,11 @@ exports.createPurchaseEntry = async (req, res) => {
   } catch (error) {
     await connection.rollback();
 
+    console.error(
+      "Create Purchase Entry Error:",
+      error
+    );
+
     return res.status(500).json({
       success: false,
       error: error.message,
@@ -402,15 +533,31 @@ exports.createPurchaseEntry = async (req, res) => {
   }
 };
 
+// ===============================
+// GET PURCHASE ENTRIES
+// ===============================
 exports.getPurchaseEntries = async (req, res) => {
   try {
     const shopId = req.user.shop_id;
-    const status = cleanText(req.query.status);
-    const search = cleanText(req.query.search);
-    const startDate = cleanText(req.query.start_date);
-    const endDate = cleanText(req.query.end_date);
+
+    const status = cleanText(
+      req.query.status
+    );
+
+    const search = cleanText(
+      req.query.search
+    );
+
+    const startDate = cleanText(
+      req.query.start_date
+    );
+
+    const endDate = cleanText(
+      req.query.end_date
+    );
 
     let where = "WHERE pe.shop_id = ?";
+
     const params = [shopId];
 
     if (status && status !== "all") {
@@ -425,17 +572,26 @@ exports.getPurchaseEntries = async (req, res) => {
           OR pe.invoice_number LIKE ?
         )
       `;
+
       const searchValue = `%${search}%`;
-      params.push(searchValue, searchValue);
+
+      params.push(
+        searchValue,
+        searchValue
+      );
     }
 
     if (startDate) {
-      where += " AND pe.purchase_date >= ?";
+      where +=
+        " AND pe.purchase_date >= ?";
+
       params.push(startDate);
     }
 
     if (endDate) {
-      where += " AND pe.purchase_date <= ?";
+      where +=
+        " AND pe.purchase_date <= ?";
+
       params.push(endDate);
     }
 
@@ -467,10 +623,18 @@ exports.getPurchaseEntries = async (req, res) => {
   }
 };
 
-exports.getPurchaseEntryDetails = async (req, res) => {
+// ===============================
+// GET PURCHASE ENTRY DETAILS
+// ===============================
+exports.getPurchaseEntryDetails = async (
+  req,
+  res
+) => {
   try {
     const shopId = req.user.shop_id;
-    const purchaseEntryId = req.params.id;
+
+    const purchaseEntryId =
+      req.params.id;
 
     const [entries] = await db.query(
       `SELECT
@@ -482,15 +646,20 @@ exports.getPurchaseEntryDetails = async (req, res) => {
          ON creator.id = pe.created_by
        LEFT JOIN users updater
          ON updater.id = pe.updated_by
-       WHERE pe.id = ? AND pe.shop_id = ?
+       WHERE pe.id = ?
+       AND pe.shop_id = ?
        LIMIT 1`,
-      [purchaseEntryId, shopId]
+      [
+        purchaseEntryId,
+        shopId,
+      ]
     );
 
     if (entries.length === 0) {
       return res.status(404).json({
         success: false,
-        message: "Purchase entry not found",
+        message:
+          "Purchase entry not found",
       });
     }
 
@@ -517,11 +686,18 @@ exports.getPurchaseEntryDetails = async (req, res) => {
   }
 };
 
-exports.updatePurchaseEntry = async (req, res) => {
+// ===============================
+// UPDATE PURCHASE ENTRY
+// ===============================
+exports.updatePurchaseEntry = async (
+  req,
+  res
+) => {
   const connection = await db.getConnection();
 
   try {
-    const validationError = validatePurchase(req.body);
+    const validationError =
+      validatePurchase(req.body);
 
     if (validationError) {
       return res.status(400).json({
@@ -532,64 +708,100 @@ exports.updatePurchaseEntry = async (req, res) => {
 
     const shopId = req.user.shop_id;
     const userId = req.user.user_id;
-    const purchaseEntryId = req.params.id;
 
-    const [existing] = await connection.query(
-      `SELECT id
-       FROM purchase_entries
-       WHERE id = ? AND shop_id = ?
-       LIMIT 1`,
-      [purchaseEntryId, shopId]
-    );
+    const purchaseEntryId =
+      req.params.id;
+
+    const [existing] =
+      await connection.query(
+        `SELECT id
+         FROM purchase_entries
+         WHERE id = ?
+         AND shop_id = ?
+         LIMIT 1`,
+        [
+          purchaseEntryId,
+          shopId,
+        ]
+      );
 
     if (existing.length === 0) {
       return res.status(404).json({
         success: false,
-        message: "Purchase entry not found",
+        message:
+          "Purchase entry not found",
       });
     }
 
     const supplierName = cleanText(
       req.body.supplier_name
     );
+
     const invoiceNumber = cleanText(
       req.body.invoice_number
     );
+
     const purchaseDate = cleanText(
       req.body.purchase_date
     );
-    const notes = cleanText(req.body.notes);
-    const status = normalizeStatus(req.body.status);
-    const items = Array.isArray(req.body.items)
+
+    const notes = cleanText(
+      req.body.notes
+    );
+
+    const status = normalizeStatus(
+      req.body.status
+    );
+
+    const items = Array.isArray(
+      req.body.items
+    )
       ? req.body.items
       : [];
 
     const totalProducts = items.length;
+
     const totalQuantity = items.reduce(
-      (sum, item) => sum + intValue(item.quantity),
+      (sum, item) =>
+        sum + intValue(item.quantity),
       0
     );
-    const totalAmount = items.reduce((sum, item) => {
-      const quantity = intValue(item.quantity);
-      const price = numberValue(item.purchase_price);
 
-      return (
-        sum +
-        (numberValue(item.total) || price * quantity)
-      );
-    }, 0);
+    const totalAmount = items.reduce(
+      (sum, item) => {
+        const quantity =
+          intValue(item.quantity);
+
+        const price =
+          numberValue(
+            item.purchase_price
+          );
+
+        return (
+          sum +
+          (numberValue(item.total) ||
+            price * quantity)
+        );
+      },
+      0
+    );
 
     await connection.beginTransaction();
 
-    const [duplicate] = await connection.query(
-      `SELECT id
-       FROM purchase_entries
-       WHERE shop_id = ?
+    const [duplicate] =
+      await connection.query(
+        `SELECT id
+         FROM purchase_entries
+         WHERE shop_id = ?
          AND invoice_number = ?
          AND id <> ?
-       LIMIT 1`,
-      [shopId, invoiceNumber, purchaseEntryId]
-    );
+         LIMIT 1`,
+        [
+          shopId,
+          invoiceNumber,
+          purchaseEntryId,
+        ]
+      );
 
     if (duplicate.length > 0) {
       await connection.rollback();
@@ -624,7 +836,8 @@ exports.updatePurchaseEntry = async (req, res) => {
            total_quantity = ?,
            total_amount = ?,
            updated_by = ?
-       WHERE id = ? AND shop_id = ?`,
+       WHERE id = ?
+       AND shop_id = ?`,
       [
         supplierName,
         invoiceNumber,
@@ -645,6 +858,7 @@ exports.updatePurchaseEntry = async (req, res) => {
       purchaseEntryId,
       shopId,
       status,
+      invoiceNumber,
       items,
     });
 
@@ -652,10 +866,16 @@ exports.updatePurchaseEntry = async (req, res) => {
 
     return res.json({
       success: true,
-      message: "Purchase entry updated successfully",
+      message:
+        "Purchase entry updated successfully",
     });
   } catch (error) {
     await connection.rollback();
+
+    console.error(
+      "Update Purchase Entry Error:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
@@ -666,85 +886,172 @@ exports.updatePurchaseEntry = async (req, res) => {
   }
 };
 
-exports.updatePurchaseStatus = async (req, res) => {
+// ===============================
+// UPDATE PURCHASE STATUS
+// ===============================
+exports.updatePurchaseStatus = async (
+  req,
+  res
+) => {
   const connection = await db.getConnection();
 
   try {
     const shopId = req.user.shop_id;
     const userId = req.user.user_id;
-    const purchaseEntryId = req.params.id;
-    const newStatus = normalizeStatus(req.body.status);
 
-    const [entries] = await connection.query(
-      `SELECT status
-       FROM purchase_entries
-       WHERE id = ? AND shop_id = ?
-       LIMIT 1`,
-      [purchaseEntryId, shopId]
-    );
+    const purchaseEntryId =
+      req.params.id;
+
+    const newStatus =
+      normalizeStatus(
+        req.body.status
+      );
+
+    const [entries] =
+      await connection.query(
+        `SELECT
+           status,
+           invoice_number
+         FROM purchase_entries
+         WHERE id = ?
+         AND shop_id = ?
+         LIMIT 1`,
+        [
+          purchaseEntryId,
+          shopId,
+        ]
+      );
 
     if (entries.length === 0) {
       return res.status(404).json({
         success: false,
-        message: "Purchase entry not found",
+        message:
+          "Purchase entry not found",
       });
     }
 
-    const oldStatus = entries[0].status;
+    const oldStatus =
+      entries[0].status;
+
+    const invoiceNumber =
+      cleanText(
+        entries[0].invoice_number
+      );
 
     if (oldStatus === newStatus) {
       return res.json({
         success: true,
-        message: "Purchase status is already updated",
+        message:
+          "Purchase status is already updated",
       });
     }
 
     await connection.beginTransaction();
 
-    const [items] = await connection.query(
-      `SELECT product_id, quantity
-       FROM purchase_entry_items
-       WHERE purchase_entry_id = ?`,
-      [purchaseEntryId]
-    );
+    const [items] =
+      await connection.query(
+        `SELECT
+           product_id,
+           quantity
+         FROM purchase_entry_items
+         WHERE purchase_entry_id = ?`,
+        [purchaseEntryId]
+      );
 
     if (oldStatus === "completed") {
       for (const item of items) {
-        await changeStock(
+        const quantity =
+          intValue(item.quantity);
+
+        const balanceStock =
+          await changeStock(
+            connection,
+            shopId,
+            item.product_id,
+            -quantity
+          );
+
+        await insertStockHistory(
           connection,
-          shopId,
-          item.product_id,
-          -intValue(item.quantity)
+          {
+            shopId,
+            productId:
+              item.product_id,
+            type: "PURCHASE",
+            quantity: -quantity,
+            balanceStock,
+            referenceId:
+              purchaseEntryId,
+            referenceNo:
+              invoiceNumber,
+            note:
+              "Purchase stock reversed",
+          }
         );
       }
     }
 
     if (newStatus === "completed") {
       for (const item of items) {
-        await changeStock(
+        const quantity =
+          intValue(item.quantity);
+
+        const balanceStock =
+          await changeStock(
+            connection,
+            shopId,
+            item.product_id,
+            quantity
+          );
+
+        await insertStockHistory(
           connection,
-          shopId,
-          item.product_id,
-          intValue(item.quantity)
+          {
+            shopId,
+            productId:
+              item.product_id,
+            type: "PURCHASE",
+            quantity,
+            balanceStock,
+            referenceId:
+              purchaseEntryId,
+            referenceNo:
+              invoiceNumber,
+            note:
+              "Purchase stock added",
+          }
         );
       }
     }
 
     await connection.query(
       `UPDATE purchase_entries
-       SET status = ?, updated_by = ?
-       WHERE id = ? AND shop_id = ?`,
-      [newStatus, userId, purchaseEntryId, shopId]
+       SET status = ?,
+           updated_by = ?
+       WHERE id = ?
+       AND shop_id = ?`,
+      [
+        newStatus,
+        userId,
+        purchaseEntryId,
+        shopId,
+      ]
     );
 
     await connection.commit();
 
     return res.json({
       success: true,
-      message: "Purchase status updated successfully",
+      message:
+        "Purchase status updated successfully",
     });
   } catch (error) {
     await connection.rollback();
+
+    console.error(
+      "Update Purchase Status Error:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
@@ -755,34 +1062,51 @@ exports.updatePurchaseStatus = async (req, res) => {
   }
 };
 
-exports.deletePurchaseEntry = async (req, res) => {
+// ===============================
+// DELETE PURCHASE ENTRY
+// ===============================
+exports.deletePurchaseEntry = async (
+  req,
+  res
+) => {
   const connection = await db.getConnection();
 
   try {
-    const role = cleanText(req.user.role).toLowerCase();
+    const role = cleanText(
+      req.user.role
+    ).toLowerCase();
 
     if (role !== "owner") {
       return res.status(403).json({
         success: false,
-        message: "Only owner can delete purchase entry",
+        message:
+          "Only owner can delete purchase entry",
       });
     }
 
     const shopId = req.user.shop_id;
-    const purchaseEntryId = req.params.id;
 
-    const [existing] = await connection.query(
-      `SELECT id
-       FROM purchase_entries
-       WHERE id = ? AND shop_id = ?
-       LIMIT 1`,
-      [purchaseEntryId, shopId]
-    );
+    const purchaseEntryId =
+      req.params.id;
+
+    const [existing] =
+      await connection.query(
+        `SELECT id
+         FROM purchase_entries
+         WHERE id = ?
+         AND shop_id = ?
+         LIMIT 1`,
+        [
+          purchaseEntryId,
+          shopId,
+        ]
+      );
 
     if (existing.length === 0) {
       return res.status(404).json({
         success: false,
-        message: "Purchase entry not found",
+        message:
+          "Purchase entry not found",
       });
     }
 
@@ -802,18 +1126,28 @@ exports.deletePurchaseEntry = async (req, res) => {
 
     await connection.query(
       `DELETE FROM purchase_entries
-       WHERE id = ? AND shop_id = ?`,
-      [purchaseEntryId, shopId]
+       WHERE id = ?
+       AND shop_id = ?`,
+      [
+        purchaseEntryId,
+        shopId,
+      ]
     );
 
     await connection.commit();
 
     return res.json({
       success: true,
-      message: "Purchase entry deleted successfully",
+      message:
+        "Purchase entry deleted successfully",
     });
   } catch (error) {
     await connection.rollback();
+
+    console.error(
+      "Delete Purchase Entry Error:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
@@ -824,18 +1158,38 @@ exports.deletePurchaseEntry = async (req, res) => {
   }
 };
 
-exports.getPurchaseSummary = async (req, res) => {
+// ===============================
+// PURCHASE SUMMARY
+// ===============================
+exports.getPurchaseSummary = async (
+  req,
+  res
+) => {
   try {
     const shopId = req.user.shop_id;
-    const filter = cleanText(req.query.filter) || "month";
-    const startDate = cleanText(req.query.start_date);
-    const endDate = cleanText(req.query.end_date);
+
+    const filter =
+      cleanText(
+        req.query.filter
+      ) || "month";
+
+    const startDate =
+      cleanText(
+        req.query.start_date
+      );
+
+    const endDate =
+      cleanText(
+        req.query.end_date
+      );
 
     let dateWhere = "";
+
     const params = [shopId];
 
     if (filter === "today") {
-      dateWhere = " AND purchase_date = CURDATE()";
+      dateWhere =
+        " AND purchase_date = CURDATE()";
     } else if (filter === "month") {
       dateWhere = `
         AND MONTH(purchase_date) = MONTH(CURDATE())
@@ -848,24 +1202,29 @@ exports.getPurchaseSummary = async (req, res) => {
     ) {
       dateWhere =
         " AND purchase_date BETWEEN ? AND ?";
-      params.push(startDate, endDate);
+
+      params.push(
+        startDate,
+        endDate
+      );
     }
 
-    const [rows] = await db.query(
-      `SELECT
-         COUNT(*) AS total_invoices,
-         COALESCE(SUM(total_products), 0)
-           AS total_products,
-         COALESCE(SUM(total_quantity), 0)
-           AS total_quantity,
-         COALESCE(SUM(total_amount), 0)
-           AS total_amount
-       FROM purchase_entries
-       WHERE shop_id = ?
+    const [rows] =
+      await db.query(
+        `SELECT
+           COUNT(*) AS total_invoices,
+           COALESCE(SUM(total_products), 0)
+             AS total_products,
+           COALESCE(SUM(total_quantity), 0)
+             AS total_quantity,
+           COALESCE(SUM(total_amount), 0)
+             AS total_amount
+         FROM purchase_entries
+         WHERE shop_id = ?
          AND status = 'completed'
-       ${dateWhere}`,
-      params
-    );
+         ${dateWhere}`,
+        params
+      );
 
     return res.json({
       success: true,
