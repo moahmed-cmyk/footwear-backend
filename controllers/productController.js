@@ -1,5 +1,9 @@
 const db = require("../config/db");
 const XLSX = require("xlsx");
+
+// ===============================
+// ADD PRODUCT
+// ===============================
 exports.addProduct = async (req, res) => {
   try {
     const shop_id = req.user.shop_id;
@@ -13,18 +17,12 @@ exports.addProduct = async (req, res) => {
       stock,
     } = req.body;
 
-    if (!name) {
+    if (!name || name.trim() === "") {
       return res.status(400).json({
         success: false,
         message: "Product name is required",
       });
     }
-    if (!name || name.trim() === "") {
-  return res.status(400).json({
-    success: false,
-    message: "Product name is required",
-  });
-}
 
     const cleanName = name.trim();
     const cleanSize = (size || "").trim();
@@ -32,29 +30,29 @@ exports.addProduct = async (req, res) => {
 
     const newStock = Number(stock || 0);
 
-   const normalizedName = cleanName
-  .toLowerCase()
-  .replace(/\s+/g, "");
+    const normalizedName = cleanName
+      .toLowerCase()
+      .replace(/\s+/g, "");
 
-const normalizedSize = cleanSize
-  .toLowerCase()
-  .replace(/\s+/g, "");
+    const normalizedSize = cleanSize
+      .toLowerCase()
+      .replace(/\s+/g, "");
 
-const [existing] = await db.query(
-  `SELECT id, stock
-   FROM products
-   WHERE shop_id = ?
-   AND REPLACE(LOWER(name), ' ', '') = ?
-   AND REPLACE(LOWER(size), ' ', '') = ?
-   AND CAST(mrp AS DECIMAL(10,2)) = CAST(? AS DECIMAL(10,2))
-   LIMIT 1`,
-  [
-    shop_id,
-    normalizedName,
-    normalizedSize,
-    Number(mrp || 0),
-  ]
-);
+    const [existing] = await db.query(
+      `SELECT id, stock
+       FROM products
+       WHERE shop_id = ?
+       AND REPLACE(LOWER(name), ' ', '') = ?
+       AND REPLACE(LOWER(size), ' ', '') = ?
+       AND CAST(mrp AS DECIMAL(10,2)) = CAST(? AS DECIMAL(10,2))
+       LIMIT 1`,
+      [
+        shop_id,
+        normalizedName,
+        normalizedSize,
+        Number(mrp || 0),
+      ]
+    );
 
     if (existing.length > 0) {
       const productId = existing[0].id;
@@ -76,14 +74,15 @@ const [existing] = await db.query(
 
       return res.json({
         success: true,
-        message: "Product already exists. Stock updated successfully",
+        message:
+          "Product already exists. Stock updated successfully",
         product_id: productId,
         updated: true,
       });
     }
 
     const [result] = await db.query(
-      `INSERT INTO products 
+      `INSERT INTO products
        (shop_id, barcode, name, size, mrp, buying_price, stock)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
@@ -104,6 +103,8 @@ const [existing] = await db.query(
       updated: false,
     });
   } catch (error) {
+    console.error("Add Product Error:", error);
+
     return res.status(500).json({
       success: false,
       error: error.message,
@@ -111,12 +112,16 @@ const [existing] = await db.query(
   }
 };
 
+// ===============================
+// GET PRODUCTS
+// ===============================
 exports.getProducts = async (req, res) => {
   try {
     const shop_id = req.user.shop_id;
 
     const [products] = await db.query(
-      `SELECT * FROM products 
+      `SELECT *
+       FROM products
        WHERE shop_id = ?
        ORDER BY id DESC`,
       [shop_id]
@@ -128,6 +133,8 @@ exports.getProducts = async (req, res) => {
       products,
     });
   } catch (error) {
+    console.error("Get Products Error:", error);
+
     return res.status(500).json({
       success: false,
       error: error.message,
@@ -135,6 +142,9 @@ exports.getProducts = async (req, res) => {
   }
 };
 
+// ===============================
+// UPDATE PRODUCT
+// ===============================
 exports.updateProduct = async (req, res) => {
   try {
     const shop_id = req.user.shop_id;
@@ -148,9 +158,8 @@ exports.updateProduct = async (req, res) => {
       buying_price,
     } = req.body;
 
-    // Check product belongs to this shop
     const [check] = await db.query(
-      `SELECT id
+      `SELECT *
        FROM products
        WHERE id = ? AND shop_id = ?`,
       [productId, shop_id]
@@ -163,9 +172,6 @@ exports.updateProduct = async (req, res) => {
       });
     }
 
-    // IMPORTANT:
-    // Stock is intentionally NOT updated here.
-    // Stock changes must happen through Purchase Entry / Sales.
     await db.query(
       `UPDATE products
        SET barcode = ?,
@@ -198,6 +204,10 @@ exports.updateProduct = async (req, res) => {
     });
   }
 };
+
+// ===============================
+// IMPORT PRODUCTS
+// ===============================
 exports.importProducts = async (req, res) => {
   try {
     const shop_id = req.user.shop_id;
@@ -209,8 +219,12 @@ exports.importProducts = async (req, res) => {
       });
     }
 
-    const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
+    const workbook = XLSX.read(req.file.buffer, {
+      type: "buffer",
+    });
+
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
+
     const rows = XLSX.utils.sheet_to_json(sheet);
 
     function getValue(row, keys) {
@@ -221,8 +235,12 @@ exports.importProducts = async (req, res) => {
       }
 
       for (const key of keys) {
-        const value = map[key.toLowerCase().trim()];
-        if (value !== undefined) return value;
+        const value =
+          map[key.toLowerCase().trim()];
+
+        if (value !== undefined) {
+          return value;
+        }
       }
 
       return "";
@@ -235,16 +253,30 @@ exports.importProducts = async (req, res) => {
 
     for (const row of rows) {
       try {
-        const barcode = getValue(row, ["barcode"]).toString().trim();
+        const barcode = getValue(
+          row,
+          ["barcode"]
+        )
+          .toString()
+          .trim();
 
-        const name = getValue(row, [
-          "product name",
-          "name",
-        ]).toString().trim();
+        const name = getValue(
+          row,
+          ["product name", "name"]
+        )
+          .toString()
+          .trim();
 
-        const size = getValue(row, ["size"]).toString().trim();
+        const size = getValue(
+          row,
+          ["size"]
+        )
+          .toString()
+          .trim();
 
-        const mrp = Number(getValue(row, ["mrp"]) || 0);
+        const mrp = Number(
+          getValue(row, ["mrp"]) || 0
+        );
 
         const buying_price = Number(
           getValue(row, [
@@ -254,15 +286,22 @@ exports.importProducts = async (req, res) => {
           ]) || 0
         );
 
-        const stock = Number(getValue(row, ["stock"]) || 0);
+        const stock = Number(
+          getValue(row, ["stock"]) || 0
+        );
 
         if (!name) {
           skipped++;
           continue;
         }
 
-        const normalizedName = name.toLowerCase().replace(/\s+/g, "");
-        const normalizedSize = size.toLowerCase().replace(/\s+/g, "");
+        const normalizedName = name
+          .toLowerCase()
+          .replace(/\s+/g, "");
+
+        const normalizedSize = size
+          .toLowerCase()
+          .replace(/\s+/g, "");
 
         const [existing] = await db.query(
           `SELECT id
@@ -270,9 +309,15 @@ exports.importProducts = async (req, res) => {
            WHERE shop_id = ?
            AND REPLACE(LOWER(name), ' ', '') = ?
            AND REPLACE(LOWER(size), ' ', '') = ?
-           AND CAST(mrp AS DECIMAL(10,2)) = CAST(? AS DECIMAL(10,2))
+           AND CAST(mrp AS DECIMAL(10,2)) =
+               CAST(? AS DECIMAL(10,2))
            LIMIT 1`,
-          [shop_id, normalizedName, normalizedSize, mrp]
+          [
+            shop_id,
+            normalizedName,
+            normalizedSize,
+            mrp,
+          ]
         );
 
         if (existing.length > 0) {
@@ -282,21 +327,41 @@ exports.importProducts = async (req, res) => {
                  barcode = ?,
                  buying_price = ?
              WHERE id = ? AND shop_id = ?`,
-            [stock, barcode, buying_price, existing[0].id, shop_id]
+            [
+              stock,
+              barcode,
+              buying_price,
+              existing[0].id,
+              shop_id,
+            ]
           );
 
           updated++;
         } else {
           await db.query(
             `INSERT INTO products
-             (shop_id, barcode, name, size, mrp, buying_price, stock)
+             (shop_id, barcode, name, size,
+              mrp, buying_price, stock)
              VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [shop_id, barcode, name, size, mrp, buying_price, stock]
+            [
+              shop_id,
+              barcode,
+              name,
+              size,
+              mrp,
+              buying_price,
+              stock,
+            ]
           );
 
           imported++;
         }
       } catch (e) {
+        console.error(
+          "Import Row Error:",
+          e.message
+        );
+
         failed++;
       }
     }
@@ -310,6 +375,11 @@ exports.importProducts = async (req, res) => {
       failed,
     });
   } catch (error) {
+    console.error(
+      "Import Products Error:",
+      error
+    );
+
     return res.status(500).json({
       success: false,
       error: error.message,
@@ -317,66 +387,17 @@ exports.importProducts = async (req, res) => {
   }
 };
 
-exports.getStockHistory = async (req, res) => {
-  try {
-    const shop_id = req.user.shop_id;
-    const productId = req.params.id;
-
-    // Check product belongs to this shop
-    const [product] = await db.query(
-      `SELECT id, name, barcode, size, mrp, buying_price, stock
-       FROM products
-       WHERE id = ? AND shop_id = ?`,
-      [productId, shop_id]
-    );
-
-    if (product.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Product not found",
-      });
-    }
-
-    // Get stock movements
-    const [history] = await db.query(
-      `SELECT
-          id,
-          type,
-          quantity,
-          balance_stock,
-          reference_id,
-          reference_no,
-          note,
-          created_at
-       FROM stock_history
-       WHERE product_id = ?
-         AND shop_id = ?
-       ORDER BY created_at DESC, id DESC`,
-      [productId, shop_id]
-    );
-
-    return res.json({
-      success: true,
-      product: product[0],
-      count: history.length,
-      history,
-    });
-  } catch (error) {
-    console.error("Get Stock History Error:", error);
-
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
-};
+// ===============================
+// DELETE PRODUCT
+// ===============================
 exports.deleteProduct = async (req, res) => {
   try {
     const shop_id = req.user.shop_id;
     const productId = req.params.id;
 
     const [check] = await db.query(
-      `SELECT * FROM products 
+      `SELECT *
+       FROM products
        WHERE id = ? AND shop_id = ?`,
       [productId, shop_id]
     );
@@ -389,7 +410,7 @@ exports.deleteProduct = async (req, res) => {
     }
 
     await db.query(
-      `DELETE FROM products 
+      `DELETE FROM products
        WHERE id = ? AND shop_id = ?`,
       [productId, shop_id]
     );
@@ -399,6 +420,76 @@ exports.deleteProduct = async (req, res) => {
       message: "Product Deleted",
     });
   } catch (error) {
+    console.error(
+      "Delete Product Error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+};
+
+// ===============================
+// GET STOCK HISTORY
+// ===============================
+exports.getStockHistory = async (req, res) => {
+  try {
+    const shop_id = req.user.shop_id;
+    const productId = req.params.id;
+
+    const [product] = await db.query(
+      `SELECT
+         id,
+         name,
+         barcode,
+         size,
+         mrp,
+         buying_price,
+         stock
+       FROM products
+       WHERE id = ? AND shop_id = ?`,
+      [productId, shop_id]
+    );
+
+    if (product.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Product not found",
+      });
+    }
+
+    const [history] = await db.query(
+      `SELECT
+         id,
+         type,
+         quantity,
+         balance_stock,
+         reference_id,
+         reference_no,
+         note,
+         created_at
+       FROM stock_history
+       WHERE product_id = ?
+       AND shop_id = ?
+       ORDER BY created_at DESC, id DESC`,
+      [productId, shop_id]
+    );
+
+    return res.json({
+      success: true,
+      product: product[0],
+      count: history.length,
+      history,
+    });
+  } catch (error) {
+    console.error(
+      "Get Stock History Error:",
+      error
+    );
+
     return res.status(500).json({
       success: false,
       error: error.message,
