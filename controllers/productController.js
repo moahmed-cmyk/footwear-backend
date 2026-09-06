@@ -316,6 +316,60 @@ exports.importProducts = async (req, res) => {
     });
   }
 };
+
+exports.getStockHistory = async (req, res) => {
+  try {
+    const shop_id = req.user.shop_id;
+    const productId = req.params.id;
+
+    // Check product belongs to this shop
+    const [product] = await db.query(
+      `SELECT id, name, barcode, size, mrp, buying_price, stock
+       FROM products
+       WHERE id = ? AND shop_id = ?`,
+      [productId, shop_id]
+    );
+
+    if (product.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Product not found",
+      });
+    }
+
+    // Get stock movements
+    const [history] = await db.query(
+      `SELECT
+          id,
+          type,
+          quantity,
+          balance_stock,
+          reference_id,
+          reference_no,
+          note,
+          created_at
+       FROM stock_history
+       WHERE product_id = ?
+         AND shop_id = ?
+       ORDER BY created_at DESC, id DESC`,
+      [productId, shop_id]
+    );
+
+    return res.json({
+      success: true,
+      product: product[0],
+      count: history.length,
+      history,
+    });
+  } catch (error) {
+    console.error("Get Stock History Error:", error);
+
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+};
 exports.deleteProduct = async (req, res) => {
   try {
     const shop_id = req.user.shop_id;

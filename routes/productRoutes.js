@@ -11,6 +11,11 @@ const {
   deleteProduct,
   importProducts,
 } = require("../controllers/productController");
+router.get(
+  "/products/:id/stock-history",
+  verifyToken,
+  getStockHistory
+);
 
 const verifyToken = require("../middleware/authMiddleware");
 
