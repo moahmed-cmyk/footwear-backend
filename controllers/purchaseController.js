@@ -285,30 +285,51 @@ async function findOrCreateProduct(
   // -----------------------------------------------
   // 4. Create new product
   // -----------------------------------------------
-  const [result] =
-    await connection.query(
-      `INSERT INTO products
-       (
-         shop_id,
-         barcode,
-         name,
-         size,
-         mrp,
-         buying_price,
-         stock
-       )
-       VALUES (?, ?, ?, ?, ?, ?, 0)`,
-      [
-        shopId,
-        barcode,
-        productName,
-        size,
-        mrp,
-        purchasePrice,
-      ]
-    );
+await connection.query(
+  `INSERT INTO products
+   (
+     shop_id,
+     barcode,
+     name,
+     size,
+     mrp,
+     buying_price,
+     stock
+   )
+   VALUES (?, ?, ?, ?, ?, ?, 0)`,
+  [
+    shopId,
+    barcode,
+    productName,
+    size,
+    mrp,
+    purchasePrice,
+  ]
+);
 
-  return result.insertId;
+const [newProduct] =
+  await connection.query(
+    `SELECT id
+     FROM products
+     WHERE shop_id = ?
+     AND REPLACE(LOWER(TRIM(name)), ' ', '') = ?
+     AND REPLACE(LOWER(TRIM(size)), ' ', '') = ?
+     ORDER BY id DESC
+     LIMIT 1`,
+    [
+      shopId,
+      normalizedName,
+      normalizedSize,
+    ]
+  );
+
+if (newProduct.length === 0) {
+  throw new Error(
+    "New product was created but product ID could not be found"
+  );
+}
+
+return newProduct[0].id;
 }
 
 // =====================================================
