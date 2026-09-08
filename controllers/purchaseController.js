@@ -1099,6 +1099,87 @@ exports.createPurchaseEntry =
   };
 
 // =====================================================
+// GET PRODUCT BY BARCODE
+//
+// Used by Purchase Entry barcode scanner.
+// Barcode identifies the existing product/article.
+// This function ONLY reads the product.
+// It does NOT create or change stock.
+// =====================================================
+
+exports.getProductByBarcode =
+  async (req, res) => {
+    try {
+      const shopId =
+        req.user.shop_id;
+
+      const barcode =
+        cleanText(req.params.barcode);
+
+      if (!barcode) {
+        return res.status(400).json({
+          success: false,
+          message: "Barcode is required",
+        });
+      }
+
+      const [rows] =
+        await db.query(
+          `SELECT
+             id,
+             barcode,
+             name,
+             size,
+             mrp,
+             buying_price,
+             stock
+           FROM products
+           WHERE shop_id = ?
+           AND TRIM(
+             COALESCE(barcode, '')
+           ) = ?
+           LIMIT 1`,
+          [
+            shopId,
+            barcode,
+          ]
+        );
+
+      if (rows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Product not found for this barcode",
+        });
+      }
+
+      const product = rows[0];
+
+      return res.json({
+        success: true,
+        product: {
+          id: product.id,
+          barcode: product.barcode,
+          product_name: product.name,
+          size: product.size,
+          mrp: product.mrp,
+          purchase_price: product.buying_price,
+          stock: product.stock,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Get Product By Barcode Error:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  };
+
+// =====================================================
 // GET PURCHASE ENTRIES
 // =====================================================
 

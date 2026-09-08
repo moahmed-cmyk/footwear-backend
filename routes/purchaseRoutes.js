@@ -1,4 +1,5 @@
 const express = require("express");
+
 const router = express.Router();
 
 const verifyToken = require(
@@ -13,6 +14,7 @@ const {
   updatePurchaseStatus,
   deletePurchaseEntry,
   getPurchaseSummary,
+  getProductByBarcode,
 } = require("../controllers/purchaseController");
 
 router.post(
@@ -31,6 +33,13 @@ router.get(
   "/purchase-entries/summary",
   verifyToken,
   getPurchaseSummary
+);
+
+// Barcode lookup for Purchase Entry scanner
+router.get(
+  "/purchase-products/barcode/:barcode",
+  verifyToken,
+  getProductByBarcode
 );
 
 router.get(
