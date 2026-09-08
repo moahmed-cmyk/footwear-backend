@@ -248,46 +248,39 @@ async function findExistingProduct(
 // If product exists -> return product ID.
 // If product doesn't exist -> create product.
 // =====================================================
-
 async function findOrCreateProduct(
   connection,
   shopId,
   item
 ) {
-  const suppliedProductId =
-    intValue(
-      item.product_id,
-      0
-    );
+  const suppliedProductId = intValue(
+    item.product_id,
+    0
+  );
 
-  const productName =
-    cleanText(
-      item.product_name
-    );
+  const productName = cleanText(
+    item.product_name
+  );
 
-  const size =
-    cleanText(
-      item.size
-    );
+  const size = cleanText(
+    item.size
+  );
 
-  const barcode =
-    cleanText(
-      item.barcode
-    );
+  const barcode = cleanText(
+    item.barcode
+  );
 
-  const mrp =
-    numberValue(
-      item.mrp
-    );
+  const mrp = numberValue(
+    item.mrp
+  );
 
-  const purchasePrice =
-    numberValue(
-      item.purchase_price
-    );
+  const purchasePrice = numberValue(
+    item.purchase_price
+  );
 
-  // -----------------------------------------------
-  // 1. Supplied Product ID
-  // -----------------------------------------------
+  // =================================================
+  // 1. SUPPLIED PRODUCT ID
+  // =================================================
 
   if (suppliedProductId > 0) {
     const [byId] =
@@ -330,9 +323,9 @@ async function findOrCreateProduct(
 
   let existing = [];
 
-  // -----------------------------------------------
-  // 2. Barcode
-  // -----------------------------------------------
+  // =================================================
+  // 2. BARCODE
+  // =================================================
 
   if (barcode) {
     [existing] =
@@ -340,7 +333,9 @@ async function findOrCreateProduct(
         `SELECT id
          FROM products
          WHERE shop_id = ?
-         AND TRIM(COALESCE(barcode, '')) = ?
+         AND TRIM(
+           COALESCE(barcode, '')
+         ) = ?
          LIMIT 1`,
         [
           shopId,
@@ -349,9 +344,9 @@ async function findOrCreateProduct(
       );
   }
 
-  // -----------------------------------------------
-  // 3. Product Name + Size
-  // -----------------------------------------------
+  // =================================================
+  // 3. PRODUCT NAME + SIZE
+  // =================================================
 
   if (existing.length === 0) {
     const normalizedName =
@@ -370,15 +365,19 @@ async function findOrCreateProduct(
          FROM products
          WHERE shop_id = ?
          AND REPLACE(
-               LOWER(TRIM(name)),
-               ' ',
-               ''
-             ) = ?
+           LOWER(TRIM(name)),
+           ' ',
+           ''
+         ) = ?
          AND REPLACE(
-               LOWER(TRIM(COALESCE(size, ''))),
-               ' ',
-               ''
-             ) = ?
+           LOWER(
+             TRIM(
+               COALESCE(size, '')
+             )
+           ),
+           ' ',
+           ''
+         ) = ?
          LIMIT 1`,
         [
           shopId,
@@ -388,15 +387,13 @@ async function findOrCreateProduct(
       );
   }
 
-  // -----------------------------------------------
-  // Existing product found
-  // -----------------------------------------------
+  // =================================================
+  // 4. EXISTING PRODUCT FOUND
+  // =================================================
 
   if (existing.length > 0) {
     const productId =
-      intValue(
-        existing[0].id
-      );
+      intValue(existing[0].id);
 
     await connection.query(
       `UPDATE products
@@ -421,40 +418,111 @@ async function findOrCreateProduct(
     return productId;
   }
 
-  // -----------------------------------------------
-  // New product
-  //
-  // ONLY COMPLETED PURCHASE reaches here.
-  // -----------------------------------------------
+  // =================================================
+  // 5. CREATE NEW PRODUCT
+  // =================================================
 
-  const [result] =
+  await connection.query(
+    `INSERT INTO products
+     (
+       shop_id,
+       barcode,
+       name,
+       size,
+       mrp,
+       buying_price,
+       stock
+     )
+     VALUES (?, ?, ?, ?, ?, ?, 0)`,
+    [
+      shopId,
+      barcode,
+      productName,
+      size,
+      mrp,
+      purchasePrice,
+    ]
+  );
+
+  // =================================================
+  // 6. IMPORTANT:
+  // Don't depend on insertId.
+  // Fetch the newly created product again.
+  // =================================================
+
+  const normalizedName =
+    productName
+      .toLowerCase()
+      .replace(/\s+/g, "");
+
+  const normalizedSize =
+    size
+      .toLowerCase()
+      .replace(/\s+/g, "");
+
+  let [createdProduct] =
     await connection.query(
-      `INSERT INTO products
-       (
-         shop_id,
-         barcode,
-         name,
-         size,
-         mrp,
-         buying_price,
-         stock
-       )
-       VALUES (?, ?, ?, ?, ?, ?, 0)`,
+      `SELECT id
+       FROM products
+       WHERE shop_id = ?
+       AND REPLACE(
+         LOWER(TRIM(name)),
+         ' ',
+         ''
+       ) = ?
+       AND REPLACE(
+         LOWER(
+           TRIM(
+             COALESCE(size, '')
+           )
+         ),
+         ' ',
+         ''
+       ) = ?
+       ORDER BY id DESC
+       LIMIT 1`,
       [
         shopId,
-        barcode,
-        productName,
-        size,
-        mrp,
-        purchasePrice,
+        normalizedName,
+        normalizedSize,
       ]
     );
 
+  // =================================================
+  // 7. BARCODE FALLBACK
+  // =================================================
+
+  if (
+    createdProduct.length === 0 &&
+    barcode
+  ) {
+    [createdProduct] =
+      await connection.query(
+        `SELECT id
+         FROM products
+         WHERE shop_id = ?
+         AND TRIM(
+           COALESCE(barcode, '')
+         ) = ?
+         ORDER BY id DESC
+         LIMIT 1`,
+        [
+          shopId,
+          barcode,
+        ]
+      );
+  }
+
+  if (createdProduct.length === 0) {
+    throw new Error(
+      "Product was inserted but could not be found afterwards"
+    );
+  }
+
   return intValue(
-    result.insertId
+    createdProduct[0].id
   );
 }
-
 // =====================================================
 // CHANGE STOCK
 // =====================================================
