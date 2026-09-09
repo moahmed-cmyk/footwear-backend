@@ -40,21 +40,33 @@ exports.createBill = async (req, res) => {
     // ===============================
     // CREATE BILL
     // ===============================
-    const [billResult] = await connection.query(
-      `INSERT INTO bills
-       (shop_id, customer_name, total, discount, payment_type, created_by)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [
-        shop_id,
-        customer_name || "",
-        finalTotal < 0 ? 0 : finalTotal,
-        discountAmount,
-        payment_type || "cash",
-        created_by,
-      ]
-    );
+   // ===============================
+// GENERATE BILL NUMBER
+// ===============================
+const [sequenceRows] = await connection.query(
+  `SELECT NEXTVAL(bills_id_seq) AS id`
+);
 
-    const billId = billResult.insertId;
+const billId = Number(sequenceRows[0].id);
+
+// ===============================
+// CREATE BILL
+// ===============================
+await connection.query(
+  `INSERT INTO bills
+   (id, shop_id, customer_name, total, discount, payment_type, created_by)
+   VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  [
+    billId,
+    shop_id,
+    customer_name || "",
+    finalTotal < 0 ? 0 : finalTotal,
+    discountAmount,
+    payment_type || "cash",
+    created_by,
+  ]
+);
+
 
     // ===============================
     // PROCESS BILL ITEMS
