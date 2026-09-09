@@ -118,126 +118,46 @@ function validatePurchase(body) {
 // If product doesn't already exist,
 // it returns null.
 // =====================================================
-
 async function findExistingProduct(
   connection,
   shopId,
   item
 ) {
-  const suppliedProductId = intValue(
-    item.product_id,
-    0
-  );
+  const productName = cleanText(item.product_name);
+  const mrp = numberValue(item.mrp);
 
-  const productName = cleanText(
-    item.product_name
-  );
+  const normalizedName = productName
+    .toLowerCase()
+    .replace(/\s+/g, "");
 
-  const size = cleanText(item.size);
-
-  const barcode = cleanText(
-    item.barcode
-  );
-
-  // -----------------------------------------------
-  // 1. Product ID
-  // -----------------------------------------------
-
-  if (suppliedProductId > 0) {
-    const [byId] =
-      await connection.query(
-        `SELECT id
-         FROM products
-         WHERE id = ?
-         AND shop_id = ?
-         LIMIT 1`,
-        [
-          suppliedProductId,
-          shopId,
-        ]
-      );
-
-    if (byId.length > 0) {
-      return intValue(
-        byId[0].id
-      );
-    }
+  if (!normalizedName || mrp <= 0) {
+    return null;
   }
 
-  // -----------------------------------------------
-  // 2. Barcode
-  // -----------------------------------------------
+  const [rows] = await connection.query(
+    `SELECT id
+     FROM products
+     WHERE shop_id = ?
+     AND REPLACE(
+       LOWER(TRIM(name)),
+       ' ',
+       ''
+     ) = ?
+     AND mrp = ?
+     ORDER BY id ASC
+     LIMIT 1`,
+    [
+      shopId,
+      normalizedName,
+      mrp,
+    ]
+  );
 
-  if (barcode) {
-    const [byBarcode] =
-      await connection.query(
-        `SELECT id
-         FROM products
-         WHERE shop_id = ?
-         AND TRIM(COALESCE(barcode, '')) = ?
-         LIMIT 1`,
-        [
-          shopId,
-          barcode,
-        ]
-      );
-
-    if (byBarcode.length > 0) {
-      return intValue(
-        byBarcode[0].id
-      );
-    }
+  if (rows.length === 0) {
+    return null;
   }
 
-  // -----------------------------------------------
-  // 3. Product Name + Size
-  // -----------------------------------------------
-
-  const normalizedName =
-    productName
-      .toLowerCase()
-      .replace(/\s+/g, "");
-
-  const normalizedSize =
-    size
-      .toLowerCase()
-      .replace(/\s+/g, "");
-
-  if (normalizedName) {
-    const [byNameSize] =
-      await connection.query(
-        `SELECT id
-         FROM products
-         WHERE shop_id = ?
-         AND REPLACE(
-               LOWER(TRIM(name)),
-               ' ',
-               ''
-             ) = ?
-         AND REPLACE(
-               LOWER(TRIM(COALESCE(size, ''))),
-               ' ',
-               ''
-             ) = ?
-         LIMIT 1`,
-        [
-          shopId,
-          normalizedName,
-          normalizedSize,
-        ]
-      );
-
-    if (byNameSize.length > 0) {
-      return intValue(
-        byNameSize[0].id
-      );
-    }
-  }
-
-  // IMPORTANT:
-  // Product does not exist.
-  // Draft must NOT create it.
-  return null;
+  return intValue(rows[0].id);
 }
 
 // =====================================================
@@ -253,11 +173,6 @@ async function findOrCreateProduct(
   shopId,
   item
 ) {
-  const suppliedProductId = intValue(
-    item.product_id,
-    0
-  );
-
   const productName = cleanText(
     item.product_name
   );
@@ -278,137 +193,74 @@ async function findOrCreateProduct(
     item.purchase_price
   );
 
+  const normalizedName = productName
+    .toLowerCase()
+    .replace(/\s+/g, "");
+
   // =================================================
-  // 1. SUPPLIED PRODUCT ID
+  // PRODUCT ID SHOULD NOT FORCE REUSE
+  //
+  // Product identity:
+  // ONLY Product Name + MRP
+  //
+  // Same Name + Same MRP
+  //     -> Existing product
+  //
+  // Same Name + Different MRP
+  //     -> New product
   // =================================================
-
-  if (suppliedProductId > 0) {
-    const [byId] =
-      await connection.query(
-        `SELECT id
-         FROM products
-         WHERE id = ?
-         AND shop_id = ?
-         LIMIT 1`,
-        [
-          suppliedProductId,
-          shopId,
-        ]
-      );
-
-    if (byId.length > 0) {
-      await connection.query(
-        `UPDATE products
-         SET barcode = ?,
-             name = ?,
-             size = ?,
-             mrp = ?,
-             buying_price = ?
-         WHERE id = ?
-         AND shop_id = ?`,
-        [
-          barcode,
-          productName,
-          size,
-          mrp,
-          purchasePrice,
-          suppliedProductId,
-          shopId,
-        ]
-      );
-
-      return suppliedProductId;
-    }
-  }
 
   let existing = [];
 
-  // =================================================
-  // 2. BARCODE
-  // =================================================
-
-  if (barcode) {
-    [existing] =
-      await connection.query(
-        `SELECT id
-         FROM products
-         WHERE shop_id = ?
-         AND TRIM(
-           COALESCE(barcode, '')
-         ) = ?
-         LIMIT 1`,
-        [
-          shopId,
-          barcode,
-        ]
-      );
+  if (normalizedName && mrp > 0) {
+    [existing] = await connection.query(
+      `SELECT
+         id,
+         name,
+         mrp,
+         stock,
+         barcode,
+         size,
+         buying_price
+       FROM products
+       WHERE shop_id = ?
+       AND REPLACE(
+         LOWER(TRIM(name)),
+         ' ',
+         ''
+       ) = ?
+       AND mrp = ?
+       ORDER BY id ASC
+       LIMIT 1`,
+      [
+        shopId,
+        normalizedName,
+        mrp,
+      ]
+    );
   }
 
   // =================================================
-  // 3. PRODUCT NAME + SIZE
-  // =================================================
-
-  if (existing.length === 0) {
-    const normalizedName =
-      productName
-        .toLowerCase()
-        .replace(/\s+/g, "");
-
-    const normalizedSize =
-      size
-        .toLowerCase()
-        .replace(/\s+/g, "");
-
-    [existing] =
-      await connection.query(
-        `SELECT id
-         FROM products
-         WHERE shop_id = ?
-         AND REPLACE(
-           LOWER(TRIM(name)),
-           ' ',
-           ''
-         ) = ?
-         AND REPLACE(
-           LOWER(
-             TRIM(
-               COALESCE(size, '')
-             )
-           ),
-           ' ',
-           ''
-         ) = ?
-         LIMIT 1`,
-        [
-          shopId,
-          normalizedName,
-          normalizedSize,
-        ]
-      );
-  }
-
-  // =================================================
-  // 4. EXISTING PRODUCT FOUND
+  // EXISTING PRODUCT FOUND
   // =================================================
 
   if (existing.length > 0) {
-    const productId =
-      intValue(existing[0].id);
+    const productId = intValue(
+      existing[0].id
+    );
 
+    // IMPORTANT:
+    // Do NOT change MRP.
+    // Do NOT change product identity.
+    //
+    // Only update purchase-related information.
+    // Keep existing barcode/name/MRP.
     await connection.query(
       `UPDATE products
-       SET barcode = ?,
-           name = ?,
-           size = ?,
-           mrp = ?,
-           buying_price = ?
+       SET buying_price = ?
        WHERE id = ?
        AND shop_id = ?`,
       [
-        barcode,
-        productName,
-        size,
-        mrp,
         purchasePrice,
         productId,
         shopId,
@@ -419,10 +271,12 @@ async function findOrCreateProduct(
   }
 
   // =================================================
-  // 5. CREATE NEW PRODUCT
+  // NO PRODUCT WITH SAME NAME + MRP
+  //
+  // CREATE NEW PRODUCT
   // =================================================
 
-  await connection.query(
+  const [result] = await connection.query(
     `INSERT INTO products
      (
        shop_id,
@@ -444,83 +298,8 @@ async function findOrCreateProduct(
     ]
   );
 
-  // =================================================
-  // 6. IMPORTANT:
-  // Don't depend on insertId.
-  // Fetch the newly created product again.
-  // =================================================
-
-  const normalizedName =
-    productName
-      .toLowerCase()
-      .replace(/\s+/g, "");
-
-  const normalizedSize =
-    size
-      .toLowerCase()
-      .replace(/\s+/g, "");
-
-  let [createdProduct] =
-    await connection.query(
-      `SELECT id
-       FROM products
-       WHERE shop_id = ?
-       AND REPLACE(
-         LOWER(TRIM(name)),
-         ' ',
-         ''
-       ) = ?
-       AND REPLACE(
-         LOWER(
-           TRIM(
-             COALESCE(size, '')
-           )
-         ),
-         ' ',
-         ''
-       ) = ?
-       ORDER BY id DESC
-       LIMIT 1`,
-      [
-        shopId,
-        normalizedName,
-        normalizedSize,
-      ]
-    );
-
-  // =================================================
-  // 7. BARCODE FALLBACK
-  // =================================================
-
-  if (
-    createdProduct.length === 0 &&
-    barcode
-  ) {
-    [createdProduct] =
-      await connection.query(
-        `SELECT id
-         FROM products
-         WHERE shop_id = ?
-         AND TRIM(
-           COALESCE(barcode, '')
-         ) = ?
-         ORDER BY id DESC
-         LIMIT 1`,
-        [
-          shopId,
-          barcode,
-        ]
-      );
-  }
-
-  if (createdProduct.length === 0) {
-    throw new Error(
-      "Product was inserted but could not be found afterwards"
-    );
-  }
-
   return intValue(
-    createdProduct[0].id
+    result.insertId
   );
 }
 // =====================================================
