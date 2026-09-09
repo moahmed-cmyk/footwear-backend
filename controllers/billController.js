@@ -8,7 +8,7 @@ exports.createBill = async (req, res) => {
 
     const shop_id = req.user.shop_id;
     const created_by = req.user.user_id;
-    const { customer_name, discount, payment_type, items } = req.body;
+    const { customer_name, discount, payment_type, cash_amount, upi_amount, items } = req.body;
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       await connection.rollback();
@@ -35,7 +35,40 @@ exports.createBill = async (req, res) => {
     }
 
     const discountAmount = Number(discount || 0);
-    const finalTotal = grandTotal - discountAmount;
+    const finalTotal = Math.max(0, grandTotal - discountAmount);
+
+    // ===============================
+    // PAYMENT AMOUNTS
+    // ===============================
+    let cashAmount = 0;
+    let upiAmount = 0;
+
+    if (payment_type === "cash") {
+      cashAmount = finalTotal;
+    } else if (payment_type === "upi") {
+      upiAmount = finalTotal;
+    } else if (payment_type === "split") {
+      cashAmount = Number(cash_amount || 0);
+      upiAmount = Number(upi_amount || 0);
+    } else {
+      await connection.rollback();
+
+      return res.status(400).json({
+        success: false,
+        message: "Invalid payment type",
+      });
+    }
+
+    const paymentTotal = cashAmount + upiAmount;
+
+    if (paymentTotal !== finalTotal) {
+      await connection.rollback();
+
+      return res.status(400).json({
+        success: false,
+        message: `Payment amount ₹${paymentTotal.toFixed(2)} must equal bill total ₹${finalTotal.toFixed(2)}`,
+      });
+    }
 
     // ===============================
     // CREATE BILL
@@ -54,15 +87,27 @@ const billId = Number(sequenceRows[0].id);
 // ===============================
 await connection.query(
   `INSERT INTO bills
-   (id, shop_id, customer_name, total, discount, payment_type, created_by)
-   VALUES (?, ?, ?, ?, ?, ?, ?)`,
+   (
+     id,
+     shop_id,
+     customer_name,
+     total,
+     discount,
+     payment_type,
+     cash_amount,
+     upi_amount,
+     created_by
+   )
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   [
     billId,
     shop_id,
     customer_name || "",
-    finalTotal < 0 ? 0 : finalTotal,
+    finalTotal,
     discountAmount,
     payment_type || "cash",
+    cashAmount,
+    upiAmount,
     created_by,
   ]
 );
@@ -224,7 +269,7 @@ await connection.query(
       success: true,
       message: "Bill Created",
       bill_id: billId,
-      total: finalTotal < 0 ? 0 : finalTotal,
+      total: finalTotal,
       profit: totalProfit,
     });
   } catch (error) {
@@ -252,7 +297,7 @@ exports.updateBill = async (req, res) => {
     const billId = req.params.id;
     const shop_id = req.user.shop_id;
     const edited_by = req.user.user_id;
-    const { customer_name, discount, payment_type, items } = req.body;
+    const { customer_name, discount, payment_type, cash_amount, upi_amount, items } = req.body;
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       await connection.rollback();
@@ -420,7 +465,40 @@ exports.updateBill = async (req, res) => {
     // CALCULATE UPDATED TOTAL
     // -------------------------------
     const discountAmount = Number(discount || 0);
-    const finalTotal = grandTotal - discountAmount;
+    const finalTotal = Math.max(0, grandTotal - discountAmount);
+
+    // -------------------------------
+    // PAYMENT AMOUNTS
+    // -------------------------------
+    let cashAmount = 0;
+    let upiAmount = 0;
+
+    if (payment_type === "cash") {
+      cashAmount = finalTotal;
+    } else if (payment_type === "upi") {
+      upiAmount = finalTotal;
+    } else if (payment_type === "split") {
+      cashAmount = Number(cash_amount || 0);
+      upiAmount = Number(upi_amount || 0);
+    } else {
+      await connection.rollback();
+
+      return res.status(400).json({
+        success: false,
+        message: "Invalid payment type",
+      });
+    }
+
+    const paymentTotal = cashAmount + upiAmount;
+
+    if (paymentTotal !== finalTotal) {
+      await connection.rollback();
+
+      return res.status(400).json({
+        success: false,
+        message: `Payment amount ₹${paymentTotal.toFixed(2)} must equal bill total ₹${finalTotal.toFixed(2)}`,
+      });
+    }
 
     // -------------------------------
     // UPDATE BILL
@@ -431,14 +509,18 @@ exports.updateBill = async (req, res) => {
            total = ?,
            discount = ?,
            payment_type = ?,
+           cash_amount = ?,
+           upi_amount = ?,
            edited_by = ?,
            edited_at = CURRENT_TIMESTAMP
        WHERE id = ? AND shop_id = ?`,
       [
         customer_name || "",
-        finalTotal < 0 ? 0 : finalTotal,
+        finalTotal,
         discountAmount,
         payment_type || "cash",
+        cashAmount,
+        upiAmount,
         edited_by,
         billId,
         shop_id,
@@ -451,7 +533,7 @@ exports.updateBill = async (req, res) => {
       success: true,
       message: "Bill Updated",
       bill_id: billId,
-      total: finalTotal < 0 ? 0 : finalTotal,
+      total: finalTotal,
       profit: totalProfit,
       edited_by,
     });
