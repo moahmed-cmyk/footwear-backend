@@ -177,14 +177,6 @@ async function findOrCreateProduct(
     item.product_name
   );
 
-  const size = cleanText(
-    item.size
-  );
-
-  const barcode = cleanText(
-    item.barcode
-  );
-
   const mrp = numberValue(
     item.mrp
   );
@@ -193,34 +185,41 @@ async function findOrCreateProduct(
     item.purchase_price
   );
 
-  const normalizedName = productName
-    .toLowerCase()
-    .replace(/\s+/g, "");
+  const size = cleanText(
+    item.size
+  );
 
-  // =================================================
-  // PRODUCT ID SHOULD NOT FORCE REUSE
-  //
-  // Product identity:
-  // ONLY Product Name + MRP
-  //
-  // Same Name + Same MRP
-  //     -> Existing product
-  //
-  // Same Name + Different MRP
-  //     -> New product
-  // =================================================
+  const barcode = cleanText(
+    item.barcode
+  );
 
-  let existing = [];
+  const normalizedName =
+    productName
+      .toLowerCase()
+      .replace(/\s+/g, "");
 
-  if (normalizedName && mrp > 0) {
-    [existing] = await connection.query(
+  // ============================================
+  // PRODUCT IDENTITY = ONLY NAME + MRP
+  // ============================================
+
+  if (
+    !normalizedName ||
+    mrp <= 0
+  ) {
+    throw new Error(
+      "Product name and valid MRP are required"
+    );
+  }
+
+  // ============================================
+  // 1. FIND EXISTING PRODUCT
+  // SAME NAME + SAME MRP ONLY
+  // ============================================
+
+  const [existing] =
+    await connection.query(
       `SELECT
          id,
-         name,
-         mrp,
-         stock,
-         barcode,
-         size,
          buying_price
        FROM products
        WHERE shop_id = ?
@@ -238,23 +237,17 @@ async function findOrCreateProduct(
         mrp,
       ]
     );
-  }
 
-  // =================================================
-  // EXISTING PRODUCT FOUND
-  // =================================================
+  // ============================================
+  // 2. EXISTING PRODUCT FOUND
+  // ============================================
 
   if (existing.length > 0) {
-    const productId = intValue(
-      existing[0].id
-    );
+    const productId =
+      intValue(existing[0].id);
 
-    // IMPORTANT:
-    // Do NOT change MRP.
-    // Do NOT change product identity.
-    //
-    // Only update purchase-related information.
-    // Keep existing barcode/name/MRP.
+    // Only purchase price can change.
+    // Do NOT overwrite name / MRP / size.
     await connection.query(
       `UPDATE products
        SET buying_price = ?
@@ -270,37 +263,44 @@ async function findOrCreateProduct(
     return productId;
   }
 
-  // =================================================
-  // NO PRODUCT WITH SAME NAME + MRP
-  //
-  // CREATE NEW PRODUCT
-  // =================================================
+  // ============================================
+  // 3. NAME SAME BUT MRP DIFFERENT
+  // → CREATE NEW PRODUCT
+  // ============================================
 
-  const [result] = await connection.query(
-    `INSERT INTO products
-     (
-       shop_id,
-       barcode,
-       name,
-       size,
-       mrp,
-       buying_price,
-       stock
-     )
-     VALUES (?, ?, ?, ?, ?, ?, 0)`,
-    [
-      shopId,
-      barcode,
-      productName,
-      size,
-      mrp,
-      purchasePrice,
-    ]
-  );
+  const [result] =
+    await connection.query(
+      `INSERT INTO products
+       (
+         shop_id,
+         barcode,
+         name,
+         size,
+         mrp,
+         buying_price,
+         stock
+       )
+       VALUES (?, ?, ?, ?, ?, ?, 0)`,
+      [
+        shopId,
+        barcode,
+        productName,
+        size,
+        mrp,
+        purchasePrice,
+      ]
+    );
 
-  return intValue(
-    result.insertId
-  );
+  const newProductId =
+    intValue(result.insertId);
+
+  if (!newProductId) {
+    throw new Error(
+      "New product could not be created"
+    );
+  }
+
+  return newProductId;
 }
 // =====================================================
 // CHANGE STOCK
