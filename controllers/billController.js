@@ -51,8 +51,7 @@ exports.createBill = async (req, res) => {
 
     const discountAmount = Number(discount || 0);
 
-    let finalTotal =
-      grandTotal - discountAmount;
+    let finalTotal = grandTotal - discountAmount;
 
     if (finalTotal < 0) {
       finalTotal = 0;
@@ -76,22 +75,21 @@ exports.createBill = async (req, res) => {
     const normalizedPaymentType =
       (payment_type || "cash").toString().toLowerCase();
 
-    // Cash payment
+    // Cash
     if (normalizedPaymentType === "cash") {
       cashAmount = finalTotal;
       upiAmount = 0;
     }
 
-    // UPI payment
+    // UPI
     else if (normalizedPaymentType === "upi") {
       cashAmount = 0;
       upiAmount = finalTotal;
     }
 
-    // Split payment
+    // Split
     else if (normalizedPaymentType === "split") {
-      const totalPaid =
-        cashAmount + upiAmount;
+      const totalPaid = cashAmount + upiAmount;
 
       if (Math.abs(totalPaid - finalTotal) > 0.01) {
         await connection.rollback();
@@ -105,17 +103,48 @@ exports.createBill = async (req, res) => {
     }
 
     // ----------------------------------------------------------
-    // GET BILL ID FROM TiDB SEQUENCE
+    // GENERATE BILL ID
     // ----------------------------------------------------------
-    // TiDB uses bills_id_seq for bills.id. Do NOT rely on
-    // MySQL insertId here, because it can return 0 with a
-    // sequence-generated primary key.
+    // bills.id itself is used as Bill No.
+    //
+    // Lock the shop row first so multiple staff/devices from
+    // the same shop cannot generate the same next ID.
+    //
+    // Example:
+    // 9001 -> 9002 -> 9003 -> 9004
+    //
+    // TiDB sequence is NOT used here.
+    // ----------------------------------------------------------
 
-    const [sequenceRows] = await connection.query(
-      `SELECT NEXTVAL(bills_id_seq) AS bill_id`
+    const [shopRows] = await connection.query(
+      `SELECT id
+       FROM shops
+       WHERE id = ?
+       FOR UPDATE`,
+      [shop_id]
     );
 
-    const billId = Number(sequenceRows[0].bill_id);
+    if (shopRows.length === 0) {
+      await connection.rollback();
+
+      return res.status(404).json({
+        success: false,
+        message: "Shop not found",
+      });
+    }
+
+    const [maxBillRows] = await connection.query(
+      `SELECT COALESCE(MAX(id), 0) AS max_bill_id
+       FROM bills
+       WHERE shop_id = ?`,
+      [shop_id]
+    );
+
+    const maxBillId = Number(
+      maxBillRows[0].max_bill_id || 0
+    );
+
+    const billId = maxBillId + 1;
 
     if (!billId || billId <= 0) {
       await connection.rollback();
@@ -164,10 +193,8 @@ exports.createBill = async (req, res) => {
     for (const item of items) {
       const productId = item.product_id;
       const quantity = Number(item.quantity || 0);
-      const sellingPrice =
-        Number(item.selling_price || 0);
-      const buyingPrice =
-        Number(item.buying_price || 0);
+      const sellingPrice = Number(item.selling_price || 0);
+      const buyingPrice = Number(item.buying_price || 0);
 
       if (!productId) {
         await connection.rollback();
@@ -191,29 +218,26 @@ exports.createBill = async (req, res) => {
       // GET PRODUCT
       // --------------------------------------------------------
 
-      const [productRows] =
-        await connection.query(
-          `SELECT id, name, stock
-           FROM products
-           WHERE id = ? AND shop_id = ?`,
-          [
-            productId,
-            shop_id,
-          ]
-        );
+      const [productRows] = await connection.query(
+        `SELECT id, name, stock
+         FROM products
+         WHERE id = ? AND shop_id = ?`,
+        [
+          productId,
+          shop_id,
+        ]
+      );
 
       if (productRows.length === 0) {
         await connection.rollback();
 
         return res.status(404).json({
           success: false,
-          message:
-            `Product not found: ${productId}`,
+          message: `Product not found: ${productId}`,
         });
       }
 
-      const product =
-        productRows[0];
+      const product = productRows[0];
 
       // --------------------------------------------------------
       // STOCK CHECK
@@ -229,12 +253,10 @@ exports.createBill = async (req, res) => {
         });
       }
 
-      const total =
-        quantity * sellingPrice;
+      const total = quantity * sellingPrice;
 
       const profit =
-        (sellingPrice - buyingPrice) *
-        quantity;
+        (sellingPrice - buyingPrice) * quantity;
 
       // --------------------------------------------------------
       // INSERT BILL ITEM
@@ -284,8 +306,7 @@ exports.createBill = async (req, res) => {
       // LOW STOCK NOTIFICATION
       // --------------------------------------------------------
 
-      const newStock =
-        product.stock - quantity;
+      const newStock = product.stock - quantity;
 
       if (newStock <= 5) {
         await connection.query(
@@ -372,12 +393,8 @@ exports.updateBill = async (req, res) => {
     await connection.beginTransaction();
 
     const billId = req.params.id;
-
-    const shop_id =
-      req.user.shop_id;
-
-    const edited_by =
-      req.user.user_id;
+    const shop_id = req.user.shop_id;
+    const edited_by = req.user.user_id;
 
     const {
       customer_name,
@@ -388,16 +405,16 @@ exports.updateBill = async (req, res) => {
       items,
     } = req.body;
 
-    if (!items ||
-        !Array.isArray(items) ||
-        items.length === 0) {
-
+    if (
+      !items ||
+      !Array.isArray(items) ||
+      items.length === 0
+    ) {
       await connection.rollback();
 
       return res.status(400).json({
         success: false,
-        message:
-          "Bill items are required",
+        message: "Bill items are required",
       });
     }
 
@@ -405,29 +422,26 @@ exports.updateBill = async (req, res) => {
     // GET OLD BILL
     // ----------------------------------------------------------
 
-    const [oldBills] =
-      await connection.query(
-        `SELECT *
-         FROM bills
-         WHERE id = ? AND shop_id = ?`,
-        [
-          billId,
-          shop_id,
-        ]
-      );
+    const [oldBills] = await connection.query(
+      `SELECT *
+       FROM bills
+       WHERE id = ? AND shop_id = ?`,
+      [
+        billId,
+        shop_id,
+      ]
+    );
 
     if (oldBills.length === 0) {
       await connection.rollback();
 
       return res.status(404).json({
         success: false,
-        message:
-          "Bill not found",
+        message: "Bill not found",
       });
     }
 
-    const oldBill =
-      oldBills[0];
+    const oldBill = oldBills[0];
 
     // ----------------------------------------------------------
     // STAFF CAN EDIT ONLY THEIR OWN BILL
@@ -447,8 +461,7 @@ exports.updateBill = async (req, res) => {
 
       return res.status(403).json({
         success: false,
-        message:
-          "You can edit only your own bill",
+        message: "You can edit only your own bill",
       });
     }
 
@@ -456,13 +469,12 @@ exports.updateBill = async (req, res) => {
     // RESTORE OLD STOCK
     // ----------------------------------------------------------
 
-    const [oldItems] =
-      await connection.query(
-        `SELECT product_id, quantity
-         FROM bill_items
-         WHERE bill_id = ?`,
-        [billId]
-      );
+    const [oldItems] = await connection.query(
+      `SELECT product_id, quantity
+       FROM bill_items
+       WHERE bill_id = ?`,
+      [billId]
+    );
 
     for (const item of oldItems) {
       if (item.product_id) {
@@ -547,7 +559,6 @@ exports.updateBill = async (req, res) => {
         .toString()
         .toLowerCase();
 
-    // Cash
     if (
       normalizedPaymentType === "cash"
     ) {
@@ -555,7 +566,6 @@ exports.updateBill = async (req, res) => {
       upiAmount = 0;
     }
 
-    // UPI
     else if (
       normalizedPaymentType === "upi"
     ) {
@@ -563,7 +573,6 @@ exports.updateBill = async (req, res) => {
       upiAmount = finalTotal;
     }
 
-    // Split
     else if (
       normalizedPaymentType === "split"
     ) {
@@ -607,8 +616,7 @@ exports.updateBill = async (req, res) => {
 
         return res.status(400).json({
           success: false,
-          message:
-            "Product ID is required",
+          message: "Product ID is required",
         });
       }
 
@@ -786,11 +794,8 @@ exports.updateBill = async (req, res) => {
 
 exports.getBills = async (req, res) => {
   try {
-    const shop_id =
-      req.user.shop_id;
-
-    const user_id =
-      req.user.user_id;
+    const shop_id = req.user.shop_id;
+    const user_id = req.user.user_id;
 
     const role =
       (req.user.role || "")
@@ -813,9 +818,7 @@ exports.getBills = async (req, res) => {
       WHERE b.shop_id = ?
     `;
 
-    const params = [
-      shop_id,
-    ];
+    const params = [shop_id];
 
     // ----------------------------------------------------------
     // STAFF → OWN BILLS ONLY
@@ -827,9 +830,7 @@ exports.getBills = async (req, res) => {
         AND b.created_by = ?
       `;
 
-      params.push(
-        user_id
-      );
+      params.push(user_id);
     }
 
     query += `
