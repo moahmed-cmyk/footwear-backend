@@ -1,5 +1,9 @@
 const db = require("../config/db");
 
+// ============================================================
+// CREATE BILL
+// ============================================================
+
 exports.createBill = async (req, res) => {
   const connection = await db.getConnection();
 
@@ -8,7 +12,15 @@ exports.createBill = async (req, res) => {
 
     const shop_id = req.user.shop_id;
     const created_by = req.user.user_id;
-    const { customer_name, discount, payment_type, cash_amount, upi_amount, items } = req.body;
+
+    const {
+      customer_name,
+      discount,
+      payment_type,
+      cash_amount,
+      upi_amount,
+      items,
+    } = req.body;
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       await connection.rollback();
@@ -22,158 +34,203 @@ exports.createBill = async (req, res) => {
     let grandTotal = 0;
     let totalProfit = 0;
 
-    // ===============================
+    // ----------------------------------------------------------
     // CALCULATE BILL TOTAL
-    // ===============================
+    // ----------------------------------------------------------
+
     for (const item of items) {
       const quantity = Number(item.quantity || 0);
       const sellingPrice = Number(item.selling_price || 0);
       const buyingPrice = Number(item.buying_price || 0);
 
       grandTotal += quantity * sellingPrice;
-      totalProfit += (sellingPrice - buyingPrice) * quantity;
+
+      totalProfit +=
+        (sellingPrice - buyingPrice) * quantity;
     }
 
     const discountAmount = Number(discount || 0);
-    const finalTotal = Math.max(0, grandTotal - discountAmount);
 
-    // ===============================
+    let finalTotal =
+      grandTotal - discountAmount;
+
+    if (finalTotal < 0) {
+      finalTotal = 0;
+    }
+
+    // ----------------------------------------------------------
     // PAYMENT AMOUNTS
-    // ===============================
-    let cashAmount = 0;
-    let upiAmount = 0;
+    // ----------------------------------------------------------
 
-    if (payment_type === "cash") {
+    let cashAmount = Number(cash_amount || 0);
+    let upiAmount = Number(upi_amount || 0);
+
+    if (cashAmount < 0) {
+      cashAmount = 0;
+    }
+
+    if (upiAmount < 0) {
+      upiAmount = 0;
+    }
+
+    const normalizedPaymentType =
+      (payment_type || "cash").toString().toLowerCase();
+
+    // Cash payment
+    if (normalizedPaymentType === "cash") {
       cashAmount = finalTotal;
-    } else if (payment_type === "upi") {
+      upiAmount = 0;
+    }
+
+    // UPI payment
+    else if (normalizedPaymentType === "upi") {
+      cashAmount = 0;
       upiAmount = finalTotal;
-    } else if (payment_type === "split") {
-      cashAmount = Number(cash_amount || 0);
-      upiAmount = Number(upi_amount || 0);
-    } else {
-      await connection.rollback();
-
-      return res.status(400).json({
-        success: false,
-        message: "Invalid payment type",
-      });
     }
 
-    const paymentTotal = cashAmount + upiAmount;
+    // Split payment
+    else if (normalizedPaymentType === "split") {
+      const totalPaid =
+        cashAmount + upiAmount;
 
-    if (paymentTotal !== finalTotal) {
-      await connection.rollback();
+      if (Math.abs(totalPaid - finalTotal) > 0.01) {
+        await connection.rollback();
 
-      return res.status(400).json({
-        success: false,
-        message: `Payment amount ₹${paymentTotal.toFixed(2)} must equal bill total ₹${finalTotal.toFixed(2)}`,
-      });
+        return res.status(400).json({
+          success: false,
+          message:
+            "Cash + UPI amount must equal the bill total",
+        });
+      }
     }
 
-    // ===============================
-    // CREATE BILL
-    // ===============================
-   // ===============================
-// GENERATE BILL NUMBER
-// ===============================
-const [sequenceRows] = await connection.query(
-  `SELECT NEXTVAL(bills_id_seq) AS id`
-);
+    // ----------------------------------------------------------
+    // INSERT BILL
+    // ----------------------------------------------------------
 
-const billId = Number(sequenceRows[0].id);
+    const [billResult] = await connection.query(
+      `INSERT INTO bills
+      (
+        shop_id,
+        customer_name,
+        total,
+        discount,
+        payment_type,
+        cash_amount,
+        upi_amount,
+        created_by
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        shop_id,
+        customer_name || "",
+        finalTotal,
+        discountAmount,
+        normalizedPaymentType,
+        cashAmount,
+        upiAmount,
+        created_by,
+      ]
+    );
 
-// ===============================
-// CREATE BILL
-// ===============================
-await connection.query(
-  `INSERT INTO bills
-   (
-     id,
-     shop_id,
-     customer_name,
-     total,
-     discount,
-     payment_type,
-     cash_amount,
-     upi_amount,
-     created_by
-   )
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  [
-    billId,
-    shop_id,
-    customer_name || "",
-    finalTotal,
-    discountAmount,
-    payment_type || "cash",
-    cashAmount,
-    upiAmount,
-    created_by,
-  ]
-);
+    const billId = billResult.insertId;
 
+    // ----------------------------------------------------------
+    // INSERT BILL ITEMS + REDUCE STOCK
+    // ----------------------------------------------------------
 
-    // ===============================
-    // PROCESS BILL ITEMS
-    // ===============================
     for (const item of items) {
       const productId = item.product_id;
       const quantity = Number(item.quantity || 0);
-      const sellingPrice = Number(item.selling_price || 0);
-      const buyingPrice = Number(item.buying_price || 0);
+      const sellingPrice =
+        Number(item.selling_price || 0);
+      const buyingPrice =
+        Number(item.buying_price || 0);
 
-      // -------------------------------
+      if (!productId) {
+        await connection.rollback();
+
+        return res.status(400).json({
+          success: false,
+          message: "Product ID is required",
+        });
+      }
+
+      if (quantity <= 0) {
+        await connection.rollback();
+
+        return res.status(400).json({
+          success: false,
+          message: "Quantity must be greater than 0",
+        });
+      }
+
+      // --------------------------------------------------------
       // GET PRODUCT
-      // -------------------------------
-      const [productRows] = await connection.query(
-        `SELECT id, name, stock
-         FROM products
-         WHERE id = ? AND shop_id = ?`,
-        [productId, shop_id]
-      );
+      // --------------------------------------------------------
+
+      const [productRows] =
+        await connection.query(
+          `SELECT id, name, stock
+           FROM products
+           WHERE id = ? AND shop_id = ?`,
+          [
+            productId,
+            shop_id,
+          ]
+        );
 
       if (productRows.length === 0) {
         await connection.rollback();
 
         return res.status(404).json({
           success: false,
-          message: `Product not found: ${productId}`,
+          message:
+            `Product not found: ${productId}`,
         });
       }
 
-      const product = productRows[0];
+      const product =
+        productRows[0];
 
-      // -------------------------------
-      // CHECK STOCK
-      // -------------------------------
+      // --------------------------------------------------------
+      // STOCK CHECK
+      // --------------------------------------------------------
+
       if (product.stock < quantity) {
         await connection.rollback();
 
         return res.status(400).json({
           success: false,
-          message: `Only ${product.stock} stock available for ${product.name}`,
+          message:
+            `Only ${product.stock} stock available for ${product.name}`,
         });
       }
 
-      const total = quantity * sellingPrice;
-      const profit = (sellingPrice - buyingPrice) * quantity;
+      const total =
+        quantity * sellingPrice;
 
-      // -------------------------------
+      const profit =
+        (sellingPrice - buyingPrice) *
+        quantity;
+
+      // --------------------------------------------------------
       // INSERT BILL ITEM
-      // -------------------------------
+      // --------------------------------------------------------
+
       await connection.query(
         `INSERT INTO bill_items
-         (
-           bill_id,
-           product_id,
-           product_name,
-           quantity,
-           selling_price,
-           buying_price,
-           total,
-           profit
-         )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        (
+          bill_id,
+          product_id,
+          product_name,
+          quantity,
+          selling_price,
+          buying_price,
+          total,
+          profit
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           billId,
           productId,
@@ -186,55 +243,38 @@ await connection.query(
         ]
       );
 
-      // -------------------------------
-      // REDUCE PRODUCT STOCK
-      // -------------------------------
+      // --------------------------------------------------------
+      // REDUCE STOCK
+      // --------------------------------------------------------
+
       await connection.query(
         `UPDATE products
          SET stock = stock - ?
          WHERE id = ? AND shop_id = ?`,
-        [quantity, productId, shop_id]
-      );
-
-      // Calculate new balance stock
-      const newStock = product.stock - quantity;
-
-      // =================================================
-      // STOCK HISTORY - SALE
-      // =================================================
-      await connection.query(
-        `INSERT INTO stock_history
-         (
-           shop_id,
-           product_id,
-           type,
-           quantity,
-           balance_stock,
-           reference_id,
-           reference_no,
-           note
-         )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          shop_id,
+          quantity,
           productId,
-          "SALE",
-          -quantity,
-          newStock,
-          billId,
-          `#${billId}`,
-          "Stock reduced by bill",
+          shop_id,
         ]
       );
 
-      // -------------------------------
+      // --------------------------------------------------------
       // LOW STOCK NOTIFICATION
-      // -------------------------------
+      // --------------------------------------------------------
+
+      const newStock =
+        product.stock - quantity;
+
       if (newStock <= 5) {
         await connection.query(
           `INSERT INTO notifications
-           (shop_id, title, message, type)
-           VALUES (?, ?, ?, ?)`,
+          (
+            shop_id,
+            title,
+            message,
+            type
+          )
+          VALUES (?, ?, ?, ?)`,
           [
             shop_id,
             "Low Stock Alert",
@@ -245,13 +285,19 @@ await connection.query(
       }
     }
 
-    // ===============================
-    // BILL CREATED NOTIFICATION
-    // ===============================
+    // ----------------------------------------------------------
+    // NEW BILL NOTIFICATION
+    // ----------------------------------------------------------
+
     await connection.query(
       `INSERT INTO notifications
-       (shop_id, title, message, type)
-       VALUES (?, ?, ?, ?)`,
+      (
+        shop_id,
+        title,
+        message,
+        type
+      )
+      VALUES (?, ?, ?, ?)`,
       [
         shop_id,
         "New Bill Created",
@@ -260,9 +306,10 @@ await connection.query(
       ]
     );
 
-    // ===============================
-    // COMMIT TRANSACTION
-    // ===============================
+    // ----------------------------------------------------------
+    // COMMIT
+    // ----------------------------------------------------------
+
     await connection.commit();
 
     return res.json({
@@ -271,22 +318,30 @@ await connection.query(
       bill_id: billId,
       total: finalTotal,
       profit: totalProfit,
+      payment_type: normalizedPaymentType,
+      cash_amount: cashAmount,
+      upi_amount: upiAmount,
     });
+
   } catch (error) {
     await connection.rollback();
+
+    console.error("CREATE BILL ERROR:", error);
 
     return res.status(500).json({
       success: false,
       error: error.message,
     });
+
   } finally {
     connection.release();
   }
 };
 
-// =====================================================
+
+// ============================================================
 // UPDATE BILL
-// =====================================================
+// ============================================================
 
 exports.updateBill = async (req, res) => {
   const connection = await db.getConnection();
@@ -295,149 +350,324 @@ exports.updateBill = async (req, res) => {
     await connection.beginTransaction();
 
     const billId = req.params.id;
-    const shop_id = req.user.shop_id;
-    const edited_by = req.user.user_id;
-    const { customer_name, discount, payment_type, cash_amount, upi_amount, items } = req.body;
 
-    if (!items || !Array.isArray(items) || items.length === 0) {
+    const shop_id =
+      req.user.shop_id;
+
+    const edited_by =
+      req.user.user_id;
+
+    const {
+      customer_name,
+      discount,
+      payment_type,
+      cash_amount,
+      upi_amount,
+      items,
+    } = req.body;
+
+    if (!items ||
+        !Array.isArray(items) ||
+        items.length === 0) {
+
       await connection.rollback();
 
       return res.status(400).json({
         success: false,
-        message: "Bill items are required",
+        message:
+          "Bill items are required",
       });
     }
 
-    // -------------------------------
+    // ----------------------------------------------------------
     // GET OLD BILL
-    // -------------------------------
-    const [oldBills] = await connection.query(
-      `SELECT *
-       FROM bills
-       WHERE id = ? AND shop_id = ?`,
-      [billId, shop_id]
-    );
+    // ----------------------------------------------------------
+
+    const [oldBills] =
+      await connection.query(
+        `SELECT *
+         FROM bills
+         WHERE id = ? AND shop_id = ?`,
+        [
+          billId,
+          shop_id,
+        ]
+      );
 
     if (oldBills.length === 0) {
       await connection.rollback();
 
       return res.status(404).json({
         success: false,
-        message: "Bill not found",
+        message:
+          "Bill not found",
       });
     }
 
-    const oldBill = oldBills[0];
+    const oldBill =
+      oldBills[0];
 
-    // -------------------------------
-    // PERMISSION CHECK
-    // -------------------------------
+    // ----------------------------------------------------------
+    // STAFF CAN EDIT ONLY THEIR OWN BILL
+    // ----------------------------------------------------------
+
+    const role =
+      (req.user.role || "")
+        .toString()
+        .toLowerCase();
+
     if (
-      req.user.role !== "owner" &&
-      oldBill.created_by !== req.user.user_id
+      role !== "owner" &&
+      Number(oldBill.created_by) !==
+        Number(req.user.user_id)
     ) {
       await connection.rollback();
 
       return res.status(403).json({
         success: false,
-        message: "You can edit only your own bill",
+        message:
+          "You can edit only your own bill",
       });
     }
 
-    // -------------------------------
-    // GET OLD ITEMS
-    // -------------------------------
-    const [oldItems] = await connection.query(
-      `SELECT product_id, quantity
-       FROM bill_items
-       WHERE bill_id = ?`,
-      [billId]
-    );
-
-    // -------------------------------
+    // ----------------------------------------------------------
     // RESTORE OLD STOCK
-    // -------------------------------
+    // ----------------------------------------------------------
+
+    const [oldItems] =
+      await connection.query(
+        `SELECT product_id, quantity
+         FROM bill_items
+         WHERE bill_id = ?`,
+        [billId]
+      );
+
     for (const item of oldItems) {
       if (item.product_id) {
         await connection.query(
           `UPDATE products
            SET stock = stock + ?
            WHERE id = ? AND shop_id = ?`,
-          [item.quantity, item.product_id, shop_id]
+          [
+            item.quantity,
+            item.product_id,
+            shop_id,
+          ]
         );
       }
     }
 
-    // -------------------------------
-    // DELETE OLD BILL ITEMS
-    // -------------------------------
+    // ----------------------------------------------------------
+    // DELETE OLD ITEMS
+    // ----------------------------------------------------------
+
     await connection.query(
       `DELETE FROM bill_items
        WHERE bill_id = ?`,
       [billId]
     );
 
+    // ----------------------------------------------------------
+    // CALCULATE NEW BILL
+    // ----------------------------------------------------------
+
     let grandTotal = 0;
     let totalProfit = 0;
 
-    // -------------------------------
-    // INSERT NEW BILL ITEMS
-    // -------------------------------
     for (const item of items) {
-      const productId = item.product_id;
-      const quantity = Number(item.quantity || 0);
-      const sellingPrice = Number(item.selling_price || 0);
-      const buyingPrice = Number(item.buying_price || 0);
+      const quantity =
+        Number(item.quantity || 0);
 
-      const [productRows] = await connection.query(
-        `SELECT id, name, stock
-         FROM products
-         WHERE id = ? AND shop_id = ?`,
-        [productId, shop_id]
-      );
+      const sellingPrice =
+        Number(item.selling_price || 0);
+
+      const buyingPrice =
+        Number(item.buying_price || 0);
+
+      grandTotal +=
+        quantity * sellingPrice;
+
+      totalProfit +=
+        (sellingPrice - buyingPrice) *
+        quantity;
+    }
+
+    const discountAmount =
+      Number(discount || 0);
+
+    let finalTotal =
+      grandTotal - discountAmount;
+
+    if (finalTotal < 0) {
+      finalTotal = 0;
+    }
+
+    // ----------------------------------------------------------
+    // PAYMENT AMOUNTS
+    // ----------------------------------------------------------
+
+    let cashAmount =
+      Number(cash_amount || 0);
+
+    let upiAmount =
+      Number(upi_amount || 0);
+
+    if (cashAmount < 0) {
+      cashAmount = 0;
+    }
+
+    if (upiAmount < 0) {
+      upiAmount = 0;
+    }
+
+    const normalizedPaymentType =
+      (payment_type || "cash")
+        .toString()
+        .toLowerCase();
+
+    // Cash
+    if (
+      normalizedPaymentType === "cash"
+    ) {
+      cashAmount = finalTotal;
+      upiAmount = 0;
+    }
+
+    // UPI
+    else if (
+      normalizedPaymentType === "upi"
+    ) {
+      cashAmount = 0;
+      upiAmount = finalTotal;
+    }
+
+    // Split
+    else if (
+      normalizedPaymentType === "split"
+    ) {
+      const totalPaid =
+        cashAmount + upiAmount;
+
+      if (
+        Math.abs(
+          totalPaid - finalTotal
+        ) > 0.01
+      ) {
+        await connection.rollback();
+
+        return res.status(400).json({
+          success: false,
+          message:
+            "Cash + UPI amount must equal the bill total",
+        });
+      }
+    }
+
+    // ----------------------------------------------------------
+    // INSERT NEW ITEMS
+    // ----------------------------------------------------------
+
+    for (const item of items) {
+      const productId =
+        item.product_id;
+
+      const quantity =
+        Number(item.quantity || 0);
+
+      const sellingPrice =
+        Number(item.selling_price || 0);
+
+      const buyingPrice =
+        Number(item.buying_price || 0);
+
+      if (!productId) {
+        await connection.rollback();
+
+        return res.status(400).json({
+          success: false,
+          message:
+            "Product ID is required",
+        });
+      }
+
+      if (quantity <= 0) {
+        await connection.rollback();
+
+        return res.status(400).json({
+          success: false,
+          message:
+            "Quantity must be greater than 0",
+        });
+      }
+
+      // --------------------------------------------------------
+      // GET PRODUCT
+      // --------------------------------------------------------
+
+      const [productRows] =
+        await connection.query(
+          `SELECT id, name, stock
+           FROM products
+           WHERE id = ? AND shop_id = ?`,
+          [
+            productId,
+            shop_id,
+          ]
+        );
 
       if (productRows.length === 0) {
         await connection.rollback();
 
         return res.status(404).json({
           success: false,
-          message: `Product not found: ${productId}`,
+          message:
+            `Product not found: ${productId}`,
         });
       }
 
-      const product = productRows[0];
+      const product =
+        productRows[0];
 
-      if (product.stock < quantity) {
+      // --------------------------------------------------------
+      // STOCK CHECK
+      // --------------------------------------------------------
+
+      if (
+        product.stock < quantity
+      ) {
         await connection.rollback();
 
         return res.status(400).json({
           success: false,
-          message: `Only ${product.stock} stock available for ${product.name}`,
+          message:
+            `Only ${product.stock} stock available for ${product.name}`,
         });
       }
 
-      const total = quantity * sellingPrice;
-      const profit = (sellingPrice - buyingPrice) * quantity;
+      const total =
+        quantity * sellingPrice;
 
-      grandTotal += total;
-      totalProfit += profit;
+      const profit =
+        (sellingPrice - buyingPrice) *
+        quantity;
 
-      // -------------------------------
-      // INSERT UPDATED BILL ITEM
-      // -------------------------------
+      // --------------------------------------------------------
+      // INSERT ITEM
+      // --------------------------------------------------------
+
       await connection.query(
         `INSERT INTO bill_items
-         (
-           bill_id,
-           product_id,
-           product_name,
-           quantity,
-           selling_price,
-           buying_price,
-           total,
-           profit
-         )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        (
+          bill_id,
+          product_id,
+          product_name,
+          quantity,
+          selling_price,
+          buying_price,
+          total,
+          profit
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           billId,
           productId,
@@ -450,59 +680,26 @@ exports.updateBill = async (req, res) => {
         ]
       );
 
-      // -------------------------------
+      // --------------------------------------------------------
       // REDUCE STOCK
-      // -------------------------------
+      // --------------------------------------------------------
+
       await connection.query(
         `UPDATE products
          SET stock = stock - ?
          WHERE id = ? AND shop_id = ?`,
-        [quantity, productId, shop_id]
+        [
+          quantity,
+          productId,
+          shop_id,
+        ]
       );
     }
 
-    // -------------------------------
-    // CALCULATE UPDATED TOTAL
-    // -------------------------------
-    const discountAmount = Number(discount || 0);
-    const finalTotal = Math.max(0, grandTotal - discountAmount);
-
-    // -------------------------------
-    // PAYMENT AMOUNTS
-    // -------------------------------
-    let cashAmount = 0;
-    let upiAmount = 0;
-
-    if (payment_type === "cash") {
-      cashAmount = finalTotal;
-    } else if (payment_type === "upi") {
-      upiAmount = finalTotal;
-    } else if (payment_type === "split") {
-      cashAmount = Number(cash_amount || 0);
-      upiAmount = Number(upi_amount || 0);
-    } else {
-      await connection.rollback();
-
-      return res.status(400).json({
-        success: false,
-        message: "Invalid payment type",
-      });
-    }
-
-    const paymentTotal = cashAmount + upiAmount;
-
-    if (paymentTotal !== finalTotal) {
-      await connection.rollback();
-
-      return res.status(400).json({
-        success: false,
-        message: `Payment amount ₹${paymentTotal.toFixed(2)} must equal bill total ₹${finalTotal.toFixed(2)}`,
-      });
-    }
-
-    // -------------------------------
+    // ----------------------------------------------------------
     // UPDATE BILL
-    // -------------------------------
+    // ----------------------------------------------------------
+
     await connection.query(
       `UPDATE bills
        SET customer_name = ?,
@@ -518,7 +715,7 @@ exports.updateBill = async (req, res) => {
         customer_name || "",
         finalTotal,
         discountAmount,
-        payment_type || "cash",
+        normalizedPaymentType,
         cashAmount,
         upiAmount,
         edited_by,
@@ -526,6 +723,10 @@ exports.updateBill = async (req, res) => {
         shop_id,
       ]
     );
+
+    // ----------------------------------------------------------
+    // COMMIT
+    // ----------------------------------------------------------
 
     await connection.commit();
 
@@ -535,60 +736,103 @@ exports.updateBill = async (req, res) => {
       bill_id: billId,
       total: finalTotal,
       profit: totalProfit,
+      payment_type: normalizedPaymentType,
+      cash_amount: cashAmount,
+      upi_amount: upiAmount,
       edited_by,
     });
+
   } catch (error) {
     await connection.rollback();
+
+    console.error("UPDATE BILL ERROR:", error);
 
     return res.status(500).json({
       success: false,
       error: error.message,
     });
+
   } finally {
     connection.release();
   }
 };
 
-// =====================================================
+
+// ============================================================
 // GET BILLS
-// =====================================================
+// ============================================================
 
 exports.getBills = async (req, res) => {
   try {
-    const shop_id = req.user.shop_id;
-    const user_id = req.user.user_id;
-    const role = (req.user.role || "").toLowerCase();
+    const shop_id =
+      req.user.shop_id;
+
+    const user_id =
+      req.user.user_id;
+
+    const role =
+      (req.user.role || "")
+        .toString()
+        .toLowerCase();
 
     let query = `
-      SELECT 
+      SELECT
         b.*,
         u.username AS created_by_name,
         eu.username AS edited_by_name
       FROM bills b
-      LEFT JOIN users u ON b.created_by = u.id
-      LEFT JOIN users eu ON b.edited_by = eu.id
+
+      LEFT JOIN users u
+        ON b.created_by = u.id
+
+      LEFT JOIN users eu
+        ON b.edited_by = eu.id
+
       WHERE b.shop_id = ?
     `;
 
-    const params = [shop_id];
+    const params = [
+      shop_id,
+    ];
+
+    // ----------------------------------------------------------
+    // STAFF → OWN BILLS ONLY
+    // OWNER → ALL SHOP BILLS
+    // ----------------------------------------------------------
 
     if (role !== "owner") {
-      query += ` AND b.created_by = ?`;
-      params.push(user_id);
+      query += `
+        AND b.created_by = ?
+      `;
+
+      params.push(
+        user_id
+      );
     }
 
-    query += ` ORDER BY b.id DESC`;
+    query += `
+      ORDER BY b.id DESC
+    `;
 
-    const [bills] = await db.query(query, params);
+    const [bills] =
+      await db.query(
+        query,
+        params
+      );
+
+    // ----------------------------------------------------------
+    // LOAD BILL ITEMS
+    // ----------------------------------------------------------
 
     for (const bill of bills) {
-      const [items] = await db.query(
-        `SELECT *
-         FROM bill_items
-         WHERE bill_id = ?
-         ORDER BY id ASC`,
-        [bill.id]
-      );
+      const [items] =
+        await db.query(
+          `SELECT *
+           FROM bill_items
+           WHERE bill_id = ?
+           ORDER BY id ASC`,
+          [bill.id]
+        );
 
       bill.items = items;
     }
@@ -598,7 +842,13 @@ exports.getBills = async (req, res) => {
       count: bills.length,
       bills,
     });
+
   } catch (error) {
+    console.error(
+      "GET BILLS ERROR:",
+      error
+    );
+
     return res.status(500).json({
       success: false,
       error: error.message,
@@ -606,106 +856,147 @@ exports.getBills = async (req, res) => {
   }
 };
 
-// =====================================================
+
+// ============================================================
 // DELETE BILL
-// =====================================================
+// ============================================================
 
 exports.deleteBill = async (req, res) => {
-  const connection = await db.getConnection();
+  const connection =
+    await db.getConnection();
 
   try {
     await connection.beginTransaction();
 
-    const billId = req.params.id;
-    const shop_id = req.user.shop_id;
-    const role = (req.user.role || "").toLowerCase();
+    const billId =
+      req.params.id;
 
-    // -------------------------------
+    const shop_id =
+      req.user.shop_id;
+
+    const role =
+      (req.user.role || "")
+        .toString()
+        .toLowerCase();
+
+    // ----------------------------------------------------------
     // OWNER ONLY
-    // -------------------------------
+    // ----------------------------------------------------------
+
     if (role !== "owner") {
       await connection.rollback();
 
       return res.status(403).json({
         success: false,
-        message: "Only owner can delete bills",
+        message:
+          "Only owner can delete bills",
       });
     }
 
-    // -------------------------------
+    // ----------------------------------------------------------
     // GET BILL
-    // -------------------------------
-    const [billRows] = await connection.query(
-      `SELECT *
-       FROM bills
-       WHERE id = ? AND shop_id = ?`,
-      [billId, shop_id]
-    );
+    // ----------------------------------------------------------
+
+    const [billRows] =
+      await connection.query(
+        `SELECT *
+         FROM bills
+         WHERE id = ? AND shop_id = ?`,
+        [
+          billId,
+          shop_id,
+        ]
+      );
 
     if (billRows.length === 0) {
       await connection.rollback();
 
       return res.status(404).json({
         success: false,
-        message: "Bill not found",
+        message:
+          "Bill not found",
       });
     }
 
-    // -------------------------------
-    // GET BILL ITEMS
-    // -------------------------------
-    const [items] = await connection.query(
-      `SELECT product_id, quantity
-       FROM bill_items
-       WHERE bill_id = ?`,
-      [billId]
-    );
+    // ----------------------------------------------------------
+    // GET ITEMS
+    // ----------------------------------------------------------
 
-    // -------------------------------
+    const [items] =
+      await connection.query(
+        `SELECT product_id, quantity
+         FROM bill_items
+         WHERE bill_id = ?`,
+        [billId]
+      );
+
+    // ----------------------------------------------------------
     // RESTORE STOCK
-    // -------------------------------
+    // ----------------------------------------------------------
+
     for (const item of items) {
       if (item.product_id) {
         await connection.query(
           `UPDATE products
            SET stock = stock + ?
            WHERE id = ? AND shop_id = ?`,
-          [item.quantity, item.product_id, shop_id]
+          [
+            item.quantity,
+            item.product_id,
+            shop_id,
+          ]
         );
       }
     }
 
-    // -------------------------------
+    // ----------------------------------------------------------
     // DELETE BILL ITEMS
-    // -------------------------------
+    // ----------------------------------------------------------
+
     await connection.query(
       `DELETE FROM bill_items
        WHERE bill_id = ?`,
       [billId]
     );
 
-    // -------------------------------
+    // ----------------------------------------------------------
     // DELETE BILL
-    // -------------------------------
+    // ----------------------------------------------------------
+
     await connection.query(
       `DELETE FROM bills
        WHERE id = ? AND shop_id = ?`,
-      [billId, shop_id]
+      [
+        billId,
+        shop_id,
+      ]
     );
+
+    // ----------------------------------------------------------
+    // COMMIT
+    // ----------------------------------------------------------
 
     await connection.commit();
 
     return res.json({
       success: true,
-      message: "Bill Deleted and Stock Restored",
+      message:
+        "Bill Deleted and Stock Restored",
     });
+
   } catch (error) {
     await connection.rollback();
+
+    console.error(
+      "DELETE BILL ERROR:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
       error: error.message,
     });
+
   } finally {
     connection.release();
   }
