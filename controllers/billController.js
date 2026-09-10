@@ -105,12 +105,35 @@ exports.createBill = async (req, res) => {
     }
 
     // ----------------------------------------------------------
+    // GET BILL ID FROM TiDB SEQUENCE
+    // ----------------------------------------------------------
+    // TiDB uses bills_id_seq for bills.id. Do NOT rely on
+    // MySQL insertId here, because it can return 0 with a
+    // sequence-generated primary key.
+
+    const [sequenceRows] = await connection.query(
+      `SELECT NEXTVAL(bills_id_seq) AS bill_id`
+    );
+
+    const billId = Number(sequenceRows[0].bill_id);
+
+    if (!billId || billId <= 0) {
+      await connection.rollback();
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to generate bill ID",
+      });
+    }
+
+    // ----------------------------------------------------------
     // INSERT BILL
     // ----------------------------------------------------------
 
-    const [billResult] = await connection.query(
+    await connection.query(
       `INSERT INTO bills
       (
+        id,
         shop_id,
         customer_name,
         total,
@@ -120,8 +143,9 @@ exports.createBill = async (req, res) => {
         upi_amount,
         created_by
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
+        billId,
         shop_id,
         customer_name || "",
         finalTotal,
@@ -132,8 +156,6 @@ exports.createBill = async (req, res) => {
         created_by,
       ]
     );
-
-    const billId = billResult.insertId;
 
     // ----------------------------------------------------------
     // INSERT BILL ITEMS + REDUCE STOCK
