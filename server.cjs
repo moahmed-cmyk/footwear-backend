@@ -3,6 +3,7 @@ const cors = require("cors");
 const dotenv = require("dotenv");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const authRoutes = require("./routes/authRoutes");
 
 const db = require("./config/db");
 const verifyToken = require("./middleware/authMiddleware");
@@ -18,6 +19,7 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
+app.use("/", authRoutes);
 
 app.use("/", dashboardRoutes);
 app.use("/", productRoutes);
