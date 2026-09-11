@@ -83,7 +83,7 @@ const createToken = (user) => {
 
 exports.sendOtp = async (req, res) => {
   try {
-    const {
+    let {
       phone,
       purpose = "owner_login",
     } = req.body;
@@ -105,10 +105,11 @@ exports.sendOtp = async (req, res) => {
     }
 
     const allowedPurposes = [
-      "register_owner",
+      "owner_auto",
       "owner_login",
       "staff_login",
       "staff_invite",
+      "register_owner",
     ];
 
     if (!allowedPurposes.includes(purpose)) {
@@ -118,12 +119,7 @@ exports.sendOtp = async (req, res) => {
       });
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | Find Existing User
-    |--------------------------------------------------------------------------
-    */
-
+    // Find existing user
     const [users] = await db.query(
       `
       SELECT
@@ -144,11 +140,50 @@ exports.sendOtp = async (req, res) => {
 
     /*
     |--------------------------------------------------------------------------
+    | OWNER AUTO FLOW
+    |--------------------------------------------------------------------------
+    |
+    | One mobile number:
+    | Existing owner -> Login OTP
+    | New mobile     -> Registration OTP
+    |
+    */
+
+    let actualPurpose = purpose;
+    let isNewUser = false;
+
+    if (purpose === "owner_auto") {
+      if (existingUser) {
+        if (existingUser.role !== "owner") {
+          return res.status(403).json({
+            success: false,
+            message:
+              "This mobile number belongs to a staff account",
+          });
+        }
+
+        if (existingUser.status !== "active") {
+          return res.status(403).json({
+            success: false,
+            message: "This owner account is inactive",
+          });
+        }
+
+        actualPurpose = "owner_login";
+        isNewUser = false;
+      } else {
+        actualPurpose = "register_owner";
+        isNewUser = true;
+      }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
     | OWNER LOGIN
     |--------------------------------------------------------------------------
     */
 
-    if (purpose === "owner_login") {
+    if (actualPurpose === "owner_login") {
       if (!existingUser) {
         return res.status(404).json({
           success: false,
@@ -179,7 +214,7 @@ exports.sendOtp = async (req, res) => {
     |--------------------------------------------------------------------------
     */
 
-    if (purpose === "staff_login") {
+    if (actualPurpose === "staff_login") {
       if (!existingUser) {
         return res.status(404).json({
           success: false,
@@ -199,7 +234,8 @@ exports.sendOtp = async (req, res) => {
       if (existingUser.status !== "active") {
         return res.status(403).json({
           success: false,
-          message: "Staff account is disabled or not verified",
+          message:
+            "Staff account is disabled or not verified",
         });
       }
     }
@@ -211,7 +247,7 @@ exports.sendOtp = async (req, res) => {
     */
 
     if (
-      purpose === "register_owner" &&
+      actualPurpose === "register_owner" &&
       existingUser
     ) {
       return res.status(409).json({
@@ -233,10 +269,7 @@ exports.sendOtp = async (req, res) => {
       WHERE phone = ?
       AND purpose = ?
       `,
-      [
-        normalizedPhone,
-        purpose,
-      ]
+      [normalizedPhone, actualPurpose]
     );
 
     /*
@@ -276,7 +309,7 @@ exports.sendOtp = async (req, res) => {
       [
         normalizedPhone,
         otpHash,
-        purpose,
+        actualPurpose,
         expiresAt,
       ]
     );
@@ -285,27 +318,18 @@ exports.sendOtp = async (req, res) => {
     |--------------------------------------------------------------------------
     | DEVELOPMENT OTP
     |--------------------------------------------------------------------------
-    |
-    | For now SMS provider is NOT connected.
-    |
-    | Development:
-    | OTP will appear in terminal and response.
-    |
-    | Production:
-    | We will connect MSG91 / Twilio / another SMS provider.
-    |
     */
 
     console.log(
-      `NIFORA OTP | ${normalizedPhone} | ${purpose} | ${otp}`
+      `NIFORA OTP | ${normalizedPhone} | ${actualPurpose} | ${otp}`
     );
 
     const response = {
       success: true,
       message: "OTP sent successfully",
+      is_new_user: isNewUser,
     };
 
-    // Only expose OTP outside production
     if (process.env.NODE_ENV !== "production") {
       response.devOtp = otp;
     }
@@ -324,13 +348,11 @@ exports.sendOtp = async (req, res) => {
     });
   }
 };
-
 /*
 |--------------------------------------------------------------------------
 | VERIFY OTP
 |--------------------------------------------------------------------------
 */
-
 exports.verifyOtp = async (req, res) => {
   try {
     const {
@@ -415,7 +437,7 @@ exports.verifyOtp = async (req, res) => {
 
     /*
     |--------------------------------------------------------------------------
-    | COMPARE OTP
+    | VERIFY OTP
     |--------------------------------------------------------------------------
     */
 
@@ -458,16 +480,15 @@ exports.verifyOtp = async (req, res) => {
 
     /*
     |--------------------------------------------------------------------------
-    | OWNER REGISTRATION OTP
+    | NEW OWNER
     |--------------------------------------------------------------------------
     */
 
-    if (
-      purpose === "register_owner"
-    ) {
+    if (purpose === "register_owner") {
       return res.json({
         success: true,
         verified: true,
+        is_new_user: true,
         message:
           "Mobile number verified successfully",
         phone: normalizedPhone,
@@ -476,13 +497,11 @@ exports.verifyOtp = async (req, res) => {
 
     /*
     |--------------------------------------------------------------------------
-    | STAFF INVITATION OTP
+    | STAFF INVITATION
     |--------------------------------------------------------------------------
     */
 
-    if (
-      purpose === "staff_invite"
-    ) {
+    if (purpose === "staff_invite") {
       return res.json({
         success: true,
         verified: true,
@@ -494,7 +513,7 @@ exports.verifyOtp = async (req, res) => {
 
     /*
     |--------------------------------------------------------------------------
-    | LOGIN USER
+    | FIND EXISTING USER
     |--------------------------------------------------------------------------
     */
 
@@ -598,21 +617,22 @@ exports.verifyOtp = async (req, res) => {
 
     /*
     |--------------------------------------------------------------------------
-    | CREATE JWT
+    | CREATE TOKEN
     |--------------------------------------------------------------------------
     */
 
-    const token =
-      createToken(user);
+    const token = createToken(user);
 
     /*
     |--------------------------------------------------------------------------
-    | LOGIN RESPONSE
+    | EXISTING USER LOGIN
     |--------------------------------------------------------------------------
     */
 
     return res.json({
       success: true,
+      verified: true,
+      is_new_user: false,
       message: "Login successful",
 
       token,
@@ -652,7 +672,6 @@ exports.verifyOtp = async (req, res) => {
     });
   }
 };
-
 /*
 |--------------------------------------------------------------------------
 | REGISTER OWNER / CREATE SHOP
