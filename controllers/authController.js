@@ -854,9 +854,11 @@ exports.registerShop = async (
           gst_number || null,
         ]
       );
+const [shopSequence] = await connection.query(
+  `SELECT NEXT VALUE FOR shops_id_seq AS shop_id`
+);
 
-    const shopId =
-      shopResult.insertId;
+const shopId = Number(shopSequence[0].shop_id);
 
     /*
     |--------------------------------------------------------------------------
@@ -948,7 +950,7 @@ exports.registerShop = async (
           rollbackError
         );
       }
-    }
+    } 
 
     console.error(
       "REGISTER SHOP ERROR:",
@@ -972,8 +974,302 @@ exports.registerShop = async (
       connection.release();
     }
   }
-};
+};exports.registerShop = async (req, res) => {
+  let connection;
 
+  try {
+    const {
+      shop_name,
+      owner_name,
+      phone,
+      address,
+      gst_number,
+      username,
+    } = req.body;
+
+    const normalizedPhone = normalizePhone(phone);
+
+    /*
+    |--------------------------------------------------------------------------
+    | VALIDATION
+    |--------------------------------------------------------------------------
+    */
+
+    if (!shop_name || !owner_name || !normalizedPhone) {
+      return res.status(400).json({
+        success: false,
+        message: "Shop name, owner name and phone are required",
+      });
+    }
+
+    if (!/^[6-9]\d{9}$/.test(normalizedPhone)) {
+      return res.status(400).json({
+        success: false,
+        message: "Enter a valid Indian mobile number",
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | CHECK VERIFIED OWNER OTP
+    |--------------------------------------------------------------------------
+    */
+
+    const [verifiedOtp] = await db.query(
+      `
+      SELECT id
+      FROM otp_verifications
+      WHERE phone = ?
+      AND purpose = 'register_owner'
+      AND verified_at IS NOT NULL
+      AND verified_at >= DATE_SUB(
+        CURRENT_TIMESTAMP,
+        INTERVAL 15 MINUTE
+      )
+      ORDER BY id DESC
+      LIMIT 1
+      `,
+      [normalizedPhone]
+    );
+
+    if (!verifiedOtp.length) {
+      return res.status(403).json({
+        success: false,
+        message: "Please verify your mobile number with OTP first",
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | CHECK EXISTING USER
+    |--------------------------------------------------------------------------
+    */
+
+    const [existingUsers] = await db.query(
+      `
+      SELECT id
+      FROM users
+      WHERE phone = ?
+      LIMIT 1
+      `,
+      [normalizedPhone]
+    );
+
+    if (existingUsers.length) {
+      return res.status(409).json({
+        success: false,
+        message: "An account already exists with this mobile number",
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | USERNAME
+    |--------------------------------------------------------------------------
+    */
+
+    const ownerUsername =
+      username && username.trim()
+        ? username.trim()
+        : normalizedPhone;
+
+    /*
+    |--------------------------------------------------------------------------
+    | RANDOM PASSWORD
+    |--------------------------------------------------------------------------
+    */
+
+    const randomPassword = generateRandomPassword();
+
+    const hashedPassword = await bcrypt.hash(
+      randomPassword,
+      10
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | DATABASE TRANSACTION
+    |--------------------------------------------------------------------------
+    */
+
+    connection = await db.getConnection();
+
+    await connection.beginTransaction();
+
+    /*
+    |--------------------------------------------------------------------------
+    | GET SHOP ID FROM TIDB SEQUENCE
+    |--------------------------------------------------------------------------
+    */
+
+    const [shopSequence] = await connection.query(
+      `
+      SELECT NEXT VALUE FOR shops_id_seq AS shop_id
+      `
+    );
+
+    const shopId = Number(shopSequence[0].shop_id);
+
+    /*
+    |--------------------------------------------------------------------------
+    | CREATE SHOP
+    |--------------------------------------------------------------------------
+    */
+
+    await connection.query(
+      `
+      INSERT INTO shops
+      (
+        id,
+        shop_name,
+        owner_name,
+        phone,
+        address,
+        gst_number
+      )
+      VALUES (?, ?, ?, ?, ?, ?)
+      `,
+      [
+        shopId,
+        shop_name.trim(),
+        owner_name.trim(),
+        normalizedPhone,
+        address || null,
+        gst_number || null,
+      ]
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | GET USER ID FROM TIDB SEQUENCE
+    |--------------------------------------------------------------------------
+    */
+
+    const [userSequence] = await connection.query(
+      `
+      SELECT NEXT VALUE FOR users_id_seq AS user_id
+      `
+    );
+
+    const userId = Number(userSequence[0].user_id);
+
+    /*
+    |--------------------------------------------------------------------------
+    | CREATE OWNER USER
+    |--------------------------------------------------------------------------
+    */
+
+    await connection.query(
+      `
+      INSERT INTO users
+      (
+        id,
+        shop_id,
+        username,
+        password,
+        role,
+        status,
+        phone
+      )
+      VALUES (?, ?, ?, ?, 'owner', 'active', ?)
+      `,
+      [
+        userId,
+        shopId,
+        ownerUsername,
+        hashedPassword,
+        normalizedPhone,
+      ]
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | COMMIT
+    |--------------------------------------------------------------------------
+    */
+
+    await connection.commit();
+
+    /*
+    |--------------------------------------------------------------------------
+    | CREATE TOKEN
+    |--------------------------------------------------------------------------
+    */
+
+    const user = {
+      id: userId,
+      shop_id: shopId,
+      role: "owner",
+    };
+
+    const token = createToken(user);
+
+    /*
+    |--------------------------------------------------------------------------
+    | RESPONSE
+    |--------------------------------------------------------------------------
+    */
+
+    return res.status(201).json({
+      success: true,
+      message: "Shop registered successfully",
+
+      token,
+
+      user: {
+        id: userId,
+        username: ownerUsername,
+        phone: normalizedPhone,
+        role: "owner",
+        shop_id: shopId,
+      },
+
+      shop: {
+        id: shopId,
+        shop_name: shop_name.trim(),
+        owner_name: owner_name.trim(),
+      },
+    });
+  } catch (error) {
+    /*
+    |--------------------------------------------------------------------------
+    | ROLLBACK
+    |--------------------------------------------------------------------------
+    */
+
+    if (connection) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error(
+          "ROLLBACK ERROR:",
+          rollbackError
+        );
+      }
+    }
+
+    console.error(
+      "REGISTER SHOP ERROR:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: "Shop registration failed",
+      error: error.message,
+    });
+  } finally {
+    /*
+    |--------------------------------------------------------------------------
+    | RELEASE CONNECTION
+    |--------------------------------------------------------------------------
+    */
+
+    if (connection) {
+      connection.release();
+    }
+  }
+};
 /*
 |--------------------------------------------------------------------------
 | ADD STAFF
