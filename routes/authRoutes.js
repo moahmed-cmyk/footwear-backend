@@ -5,7 +5,7 @@ const router = express.Router();
 const authController = require("../controllers/authController");
 const verifyToken = require("../middleware/authMiddleware");
 const permissionController = require("../controllers/permissionController");
-
+const requirePermission = require("../middleware/permissionMiddleware");
 /*
 |--------------------------------------------------------------------------
 | OWNER REGISTRATION / AUTO LOGIN
@@ -201,9 +201,9 @@ router.post(
 router.post(
   "/add-staff",
   verifyToken,
+  requirePermission("staff_management"),
   authController.addStaff
 );
-
 // Staff verifies invitation OTP
 router.post(
   "/verify-staff",
