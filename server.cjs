@@ -23,7 +23,7 @@ app.use(cors());
 app.use(express.json());
 
 app.use("/", authRoutes);
-
+app.use("/", subscriptionRoutes);
 app.use("/", dashboardRoutes);
 app.use("/", productRoutes);
 app.use("/", billRoutes);
