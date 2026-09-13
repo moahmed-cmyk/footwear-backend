@@ -53,8 +53,11 @@ app.get("/", async (req, res) => {
 // ======================================================
 // NET PROFIT
 // ======================================================
-
-app.get("/net-profit", verifyToken, async (req, res) => {
+app.get(
+  "/net-profit",
+  verifyToken,
+  requirePermission("reports"),
+  async (req, res) => {
   try {
     const shopId = req.user.shop_id;
     const { startDate, endDate } = req.query;
@@ -443,7 +446,11 @@ app.post("/staff", verifyToken, async (req, res) => {
 // MONTHLY TOP SELLING
 // ======================================================
 
-app.get("/monthly-top-selling", verifyToken, async (req, res) => {
+app.get(
+  "/monthly-top-selling",
+  verifyToken,
+  requirePermission("reports"),
+  async (req, res) => {
   try {
     const shopId = req.user.shop_id;
 
