@@ -136,11 +136,22 @@ router.post(
   authController.verifyOtp
 );
 
-/* 
+/*
 |--------------------------------------------------------------------------
 | STAFF PERMISSIONS
 |--------------------------------------------------------------------------
 */
+
+// IMPORTANT:
+// Keep /staff/my-permissions BEFORE /staff/:id/permissions
+// because otherwise "my-permissions" can be treated as :id.
+
+// Logged-in staff gets their own permissions
+router.get(
+  "/staff/my-permissions",
+  verifyToken,
+  permissionController.getMyPermissions
+);
 
 // Owner gets one staff member's permissions
 router.get(
@@ -154,14 +165,6 @@ router.put(
   "/staff/:id/permissions",
   verifyToken,
   permissionController.updateStaffPermissions
-);
-
-// Logged-in staff gets their own permissions
-// IMPORTANT: Keep this BEFORE /staff/:id/permissions
-router.get(
-  "/staff/my-permissions",
-  verifyToken,
-  permissionController.getMyPermissions
 );
 
 /*
