@@ -245,11 +245,12 @@ exports.verifySubscriptionPayment = async (req, res) => {
     // -------------------------------------------------
     // Compare signatures safely
     // -------------------------------------------------
-    const isValid = crypto.timingSafeEqual(
-      Buffer.from(generatedSignature),
-      Buffer.from(razorpay_signature)
-    );
+const generatedBuffer = Buffer.from(generatedSignature);
+const receivedBuffer = Buffer.from(razorpay_signature);
 
+const isValid =
+  generatedBuffer.length === receivedBuffer.length &&
+  crypto.timingSafeEqual(generatedBuffer, receivedBuffer);
     if (!isValid) {
       return res.status(400).json({
         success: false,
