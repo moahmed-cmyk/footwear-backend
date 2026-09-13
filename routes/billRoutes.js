@@ -1,18 +1,47 @@
-  const express = require("express");
-  const router = express.Router();
+const express = require("express");
 
-  const {
-    createBill,
-    getBills,
-    updateBill,
-    deleteBill,
-  } = require("../controllers/billController");
+const router = express.Router();
 
-  const verifyToken = require("../middleware/authMiddleware");
+const {
+  createBill,
+  getBills,
+  updateBill,
+  deleteBill,
+} = require("../controllers/billController");
 
-  router.post("/bills", verifyToken, createBill);
-  router.get("/bills", verifyToken, getBills);
-  router.put("/bills/:id", verifyToken, updateBill);
-  router.delete("/bills/:id", verifyToken, deleteBill);
+const verifyToken = require("../middleware/authMiddleware");
+const requirePermission = require("../middleware/permissionMiddleware");
 
-  module.exports = router;  
+// Create Bill
+router.post(
+  "/bills",
+  verifyToken,
+  requirePermission("create_bill"),
+  createBill
+);
+
+// Bill History
+router.get(
+  "/bills",
+  verifyToken,
+  requirePermission("bill_history"),
+  getBills
+);
+
+// Update Bill
+router.put(
+  "/bills/:id",
+  verifyToken,
+  requirePermission("create_bill"),
+  updateBill
+);
+
+// Delete Bill
+router.delete(
+  "/bills/:id",
+  verifyToken,
+  requirePermission("create_bill"),
+  deleteBill
+);
+
+module.exports = router;
