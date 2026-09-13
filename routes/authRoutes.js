@@ -4,6 +4,7 @@ const router = express.Router();
 
 const authController = require("../controllers/authController");
 const verifyToken = require("../middleware/authMiddleware");
+const permissionController = require("../controllers/permissionController");
 
 /*
 |--------------------------------------------------------------------------
@@ -133,6 +134,34 @@ router.post(
     next();
   },
   authController.verifyOtp
+);
+
+/* 
+|--------------------------------------------------------------------------
+| STAFF PERMISSIONS
+|--------------------------------------------------------------------------
+*/
+
+// Owner gets one staff member's permissions
+router.get(
+  "/staff/:id/permissions",
+  verifyToken,
+  permissionController.getStaffPermissions
+);
+
+// Owner updates one staff member's permissions
+router.put(
+  "/staff/:id/permissions",
+  verifyToken,
+  permissionController.updateStaffPermissions
+);
+
+// Logged-in staff gets their own permissions
+// IMPORTANT: Keep this BEFORE /staff/:id/permissions
+router.get(
+  "/staff/my-permissions",
+  verifyToken,
+  permissionController.getMyPermissions
 );
 
 /*
