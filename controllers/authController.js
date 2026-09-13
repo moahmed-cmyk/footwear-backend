@@ -33,7 +33,7 @@ const generateOtp = () => {
   return crypto.randomInt(100000, 1000000).toString();
 };
 
-// Generate random password because users.password is currently NOT NULL
+// Generate random password because users.password is NOT NULL
 const generateRandomPassword = () => {
   return crypto.randomBytes(32).toString("hex");
 };
@@ -42,15 +42,6 @@ const generateRandomPassword = () => {
 |--------------------------------------------------------------------------
 | CREATE JWT TOKEN
 |--------------------------------------------------------------------------
-|
-| IMPORTANT:
-| Existing NIFORA APIs use:
-| req.user.user_id
-| req.user.shop_id
-| req.user.role
-|
-| So we MUST keep these exact names.
-|
 */
 
 const createToken = (user) => {
@@ -71,14 +62,6 @@ const createToken = (user) => {
 |--------------------------------------------------------------------------
 | SEND OTP
 |--------------------------------------------------------------------------
-|
-| Supported purposes:
-|
-| register_owner
-| owner_login
-| staff_login
-| staff_invite
-|
 */
 
 exports.sendOtp = async (req, res) => {
@@ -142,11 +125,6 @@ exports.sendOtp = async (req, res) => {
     |--------------------------------------------------------------------------
     | OWNER AUTO FLOW
     |--------------------------------------------------------------------------
-    |
-    | One mobile number:
-    | Existing owner -> Login OTP
-    | New mobile     -> Registration OTP
-    |
     */
 
     let actualPurpose = purpose;
@@ -348,11 +326,13 @@ exports.sendOtp = async (req, res) => {
     });
   }
 };
+
 /*
 |--------------------------------------------------------------------------
 | VERIFY OTP
 |--------------------------------------------------------------------------
 */
+
 exports.verifyOtp = async (req, res) => {
   try {
     const {
@@ -571,6 +551,7 @@ exports.verifyOtp = async (req, res) => {
         phone,
         address,
         gst_number,
+        subscription_plan_id,
         subscription_status,
         subscription_end_date
       FROM shops
@@ -652,6 +633,8 @@ exports.verifyOtp = async (req, res) => {
         phone: shop.phone,
         address: shop.address,
         gst_number: shop.gst_number,
+        subscription_plan_id:
+          shop.subscription_plan_id,
         subscription_status:
           shop.subscription_status,
         subscription_end_date:
@@ -672,10 +655,16 @@ exports.verifyOtp = async (req, res) => {
     });
   }
 };
+
 /*
 |--------------------------------------------------------------------------
 | REGISTER OWNER / CREATE SHOP
 |--------------------------------------------------------------------------
+|
+| NEW:
+| Active Free Trial plan is automatically selected
+| from subscription_plans table.
+|
 */
 
 exports.registerShop = async (
@@ -800,11 +789,6 @@ exports.registerShop = async (
     |--------------------------------------------------------------------------
     | RANDOM PASSWORD
     |--------------------------------------------------------------------------
-    |
-    | Phone + OTP is the login method.
-    | Existing password column is NOT NULL,
-    | so we store a random hashed password.
-    |
     */
 
     const randomPassword =
@@ -829,272 +813,58 @@ exports.registerShop = async (
 
     /*
     |--------------------------------------------------------------------------
-    | CREATE SHOP
+    | GET ACTIVE FREE TRIAL PLAN
     |--------------------------------------------------------------------------
+    |
+    | We do NOT hard-code plan id = 3.
+    | The active Free Trial plan is found
+    | automatically from subscription_plans.
+    |
     */
 
-    const [shopResult] =
+    const [freeTrialPlans] =
       await connection.query(
         `
-        INSERT INTO shops
-        (
-          shop_name,
-          owner_name,
-          phone,
-          address,
-          gst_number
-        )
-        VALUES (?, ?, ?, ?, ?)
-        `,
-        [
-          shop_name.trim(),
-          owner_name.trim(),
-          normalizedPhone,
-          address || null,
-          gst_number || null,
-        ]
-      );
-const [shopSequence] = await connection.query(
-  `SELECT NEXT VALUE FOR shops_id_seq AS shop_id`
-);
-
-const shopId = Number(shopSequence[0].shop_id);
-
-    /*
-    |--------------------------------------------------------------------------
-    | CREATE OWNER USER
-    |--------------------------------------------------------------------------
-    */
-
-    const [userResult] =
-      await connection.query(
+        SELECT
+          id,
+          duration_days
+        FROM subscription_plans
+        WHERE plan_name = 'Free Trial'
+        AND status = 'active'
+        ORDER BY id ASC
+        LIMIT 1
         `
-        INSERT INTO users
-        (
-          shop_id,
-          username,
-          password,
-          role,
-          status,
-          phone
-        )
-        VALUES (?, ?, ?, 'owner', 'active', ?)
-        `,
-        [
-          shopId,
-          ownerUsername,
-          hashedPassword,
-          normalizedPhone,
-        ]
       );
 
-    await connection.commit();
-
-    /*
-    |--------------------------------------------------------------------------
-    | CREATE TOKEN
-    |--------------------------------------------------------------------------
-    */
-
-    const user = {
-      id: userResult.insertId,
-      shop_id: shopId,
-      role: "owner",
-    };
-
-    const token =
-      createToken(user);
-
-    /*
-    |--------------------------------------------------------------------------
-    | RESPONSE
-    |--------------------------------------------------------------------------
-    */
-
-    return res.status(201).json({
-      success: true,
-      message:
-        "Shop registered successfully",
-
-      token,
-
-      user: {
-        id: userResult.insertId,
-        username: ownerUsername,
-        phone: normalizedPhone,
-        role: "owner",
-        shop_id: shopId,
-      },
-
-      shop: {
-        id: shopId,
-        shop_name:
-          shop_name.trim(),
-        owner_name:
-          owner_name.trim(),
-      },
-    });
-  } catch (error) {
-    /*
-    |--------------------------------------------------------------------------
-    | ROLLBACK
-    |--------------------------------------------------------------------------
-    */
-
-    if (connection) {
-      try {
-        await connection.rollback();
-      } catch (rollbackError) {
-        console.error(
-          "ROLLBACK ERROR:",
-          rollbackError
-        );
-      }
-    } 
-
-    console.error(
-      "REGISTER SHOP ERROR:",
-      error
-    );
-
-    return res.status(500).json({
-      success: false,
-      message:
-        "Shop registration failed",
-      error: error.message,
-    });
-  } finally {
-    /*
-    |--------------------------------------------------------------------------
-    | RELEASE CONNECTION
-    |--------------------------------------------------------------------------
-    */
-
-    if (connection) {
-      connection.release();
-    }
-  }
-};exports.registerShop = async (req, res) => {
-  let connection;
-
-  try {
-    const {
-      shop_name,
-      owner_name,
-      phone,
-      address,
-      gst_number,
-      username,
-    } = req.body;
-
-    const normalizedPhone = normalizePhone(phone);
-
-    /*
-    |--------------------------------------------------------------------------
-    | VALIDATION
-    |--------------------------------------------------------------------------
-    */
-
-    if (!shop_name || !owner_name || !normalizedPhone) {
-      return res.status(400).json({
-        success: false,
-        message: "Shop name, owner name and phone are required",
-      });
+    if (!freeTrialPlans.length) {
+      throw new Error(
+        "Active Free Trial subscription plan not found"
+      );
     }
 
-    if (!/^[6-9]\d{9}$/.test(normalizedPhone)) {
-      return res.status(400).json({
-        success: false,
-        message: "Enter a valid Indian mobile number",
-      });
+    const freeTrialPlanId =
+      Number(
+        freeTrialPlans[0].id
+      );
+
+    const freeTrialDays =
+      Number(
+        freeTrialPlans[0].duration_days
+      );
+
+    if (
+      !Number.isInteger(
+        freeTrialPlanId
+      ) ||
+      !Number.isInteger(
+        freeTrialDays
+      ) ||
+      freeTrialDays <= 0
+    ) {
+      throw new Error(
+        "Invalid Free Trial plan configuration"
+      );
     }
-
-    /*
-    |--------------------------------------------------------------------------
-    | CHECK VERIFIED OWNER OTP
-    |--------------------------------------------------------------------------
-    */
-
-    const [verifiedOtp] = await db.query(
-      `
-      SELECT id
-      FROM otp_verifications
-      WHERE phone = ?
-      AND purpose = 'register_owner'
-      AND verified_at IS NOT NULL
-      AND verified_at >= DATE_SUB(
-        CURRENT_TIMESTAMP,
-        INTERVAL 15 MINUTE
-      )
-      ORDER BY id DESC
-      LIMIT 1
-      `,
-      [normalizedPhone]
-    );
-
-    if (!verifiedOtp.length) {
-      return res.status(403).json({
-        success: false,
-        message: "Please verify your mobile number with OTP first",
-      });
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | CHECK EXISTING USER
-    |--------------------------------------------------------------------------
-    */
-
-    const [existingUsers] = await db.query(
-      `
-      SELECT id
-      FROM users
-      WHERE phone = ?
-      LIMIT 1
-      `,
-      [normalizedPhone]
-    );
-
-    if (existingUsers.length) {
-      return res.status(409).json({
-        success: false,
-        message: "An account already exists with this mobile number",
-      });
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | USERNAME
-    |--------------------------------------------------------------------------
-    */
-
-    const ownerUsername =
-      username && username.trim()
-        ? username.trim()
-        : normalizedPhone;
-
-    /*
-    |--------------------------------------------------------------------------
-    | RANDOM PASSWORD
-    |--------------------------------------------------------------------------
-    */
-
-    const randomPassword = generateRandomPassword();
-
-    const hashedPassword = await bcrypt.hash(
-      randomPassword,
-      10
-    );
-
-    /*
-    |--------------------------------------------------------------------------
-    | DATABASE TRANSACTION
-    |--------------------------------------------------------------------------
-    */
-
-    connection = await db.getConnection();
-
-    await connection.beginTransaction();
 
     /*
     |--------------------------------------------------------------------------
@@ -1102,13 +872,17 @@ const shopId = Number(shopSequence[0].shop_id);
     |--------------------------------------------------------------------------
     */
 
-    const [shopSequence] = await connection.query(
-      `
-      SELECT NEXT VALUE FOR shops_id_seq AS shop_id
-      `
-    );
+    const [shopSequence] =
+      await connection.query(
+        `
+        SELECT NEXT VALUE FOR shops_id_seq AS shop_id
+        `
+      );
 
-    const shopId = Number(shopSequence[0].shop_id);
+    const shopId =
+      Number(
+        shopSequence[0].shop_id
+      );
 
     /*
     |--------------------------------------------------------------------------
@@ -1116,34 +890,39 @@ const shopId = Number(shopSequence[0].shop_id);
     |--------------------------------------------------------------------------
     */
 
-   await connection.query(
-  `
-  INSERT INTO shops
-  (
-    id,
-    shop_name,
-    owner_name,
-    phone,
-    address,
-    gst_number,
-    subscription_status,
-    subscription_end_date
-  )
-  VALUES (
-    ?, ?, ?, ?, ?, ?,
-    'active',
-    DATE_ADD(CURRENT_DATE, INTERVAL 30 DAY)
-  )
-  `,
-  [
-    shopId,
-    shop_name.trim(),
-    owner_name.trim(),
-    normalizedPhone,
-    address || null,
-    gst_number || null,
-  ]
-);
+    await connection.query(
+      `
+      INSERT INTO shops
+      (
+        id,
+        shop_name,
+        owner_name,
+        phone,
+        address,
+        gst_number,
+        subscription_plan_id,
+        subscription_status,
+        subscription_end_date
+      )
+      VALUES (
+        ?, ?, ?, ?, ?, ?, ?,
+        'active',
+        DATE_ADD(
+          CURRENT_DATE,
+          INTERVAL ${freeTrialDays} DAY
+        )
+      )
+      `,
+      [
+        shopId,
+        shop_name.trim(),
+        owner_name.trim(),
+        normalizedPhone,
+        address || null,
+        gst_number || null,
+        freeTrialPlanId,
+      ]
+    );
 
     /*
     |--------------------------------------------------------------------------
@@ -1151,13 +930,17 @@ const shopId = Number(shopSequence[0].shop_id);
     |--------------------------------------------------------------------------
     */
 
-    const [userSequence] = await connection.query(
-      `
-      SELECT NEXT VALUE FOR users_id_seq AS user_id
-      `
-    );
+    const [userSequence] =
+      await connection.query(
+        `
+        SELECT NEXT VALUE FOR users_id_seq AS user_id
+        `
+      );
 
-    const userId = Number(userSequence[0].user_id);
+    const userId =
+      Number(
+        userSequence[0].user_id
+      );
 
     /*
     |--------------------------------------------------------------------------
@@ -1208,7 +991,8 @@ const shopId = Number(shopSequence[0].shop_id);
       role: "owner",
     };
 
-    const token = createToken(user);
+    const token =
+      createToken(user);
 
     /*
     |--------------------------------------------------------------------------
@@ -1218,7 +1002,8 @@ const shopId = Number(shopSequence[0].shop_id);
 
     return res.status(201).json({
       success: true,
-      message: "Shop registered successfully",
+      message:
+        "Shop registered successfully",
 
       token,
 
@@ -1232,8 +1017,14 @@ const shopId = Number(shopSequence[0].shop_id);
 
       shop: {
         id: shopId,
-        shop_name: shop_name.trim(),
-        owner_name: owner_name.trim(),
+        shop_name:
+          shop_name.trim(),
+        owner_name:
+          owner_name.trim(),
+        subscription_plan_id:
+          freeTrialPlanId,
+        subscription_status:
+          "active",
       },
     });
   } catch (error) {
@@ -1261,7 +1052,8 @@ const shopId = Number(shopSequence[0].shop_id);
 
     return res.status(500).json({
       success: false,
-      message: "Shop registration failed",
+      message:
+        "Shop registration failed",
       error: error.message,
     });
   } finally {
@@ -1276,6 +1068,7 @@ const shopId = Number(shopSequence[0].shop_id);
     }
   }
 };
+
 /*
 |--------------------------------------------------------------------------
 | ADD STAFF
@@ -1397,6 +1190,24 @@ exports.addStaff = async (
 
     /*
     |--------------------------------------------------------------------------
+    | GET STAFF ID FROM TIDB SEQUENCE
+    |--------------------------------------------------------------------------
+    */
+
+    const [staffSequence] =
+      await db.query(
+        `
+        SELECT NEXT VALUE FOR users_id_seq AS user_id
+        `
+      );
+
+    const staffId =
+      Number(
+        staffSequence[0].user_id
+      );
+
+    /*
+    |--------------------------------------------------------------------------
     | CREATE STAFF
     |--------------------------------------------------------------------------
     |
@@ -1404,27 +1215,28 @@ exports.addStaff = async (
     |
     */
 
-    const [result] =
-      await db.query(
-        `
-        INSERT INTO users
-        (
-          shop_id,
-          username,
-          password,
-          role,
-          status,
-          phone
-        )
-        VALUES (?, ?, ?, 'staff', 'inactive', ?)
-        `,
-        [
-          req.user.shop_id,
-          staffUsername,
-          hashedPassword,
-          normalizedPhone,
-        ]
-      );
+    await db.query(
+      `
+      INSERT INTO users
+      (
+        id,
+        shop_id,
+        username,
+        password,
+        role,
+        status,
+        phone
+      )
+      VALUES (?, ?, ?, ?, 'staff', 'inactive', ?)
+      `,
+      [
+        staffId,
+        req.user.shop_id,
+        staffUsername,
+        hashedPassword,
+        normalizedPhone,
+      ]
+    );
 
     /*
     |--------------------------------------------------------------------------
@@ -1488,7 +1300,7 @@ exports.addStaff = async (
       success: true,
       message:
         "Staff created. OTP sent to staff mobile number",
-      staff_id: result.insertId,
+      staff_id: staffId,
     };
 
     if (
@@ -1520,9 +1332,6 @@ exports.addStaff = async (
 |--------------------------------------------------------------------------
 | VERIFY STAFF INVITATION
 |--------------------------------------------------------------------------
-|
-| Staff uses OTP received after owner adds them.
-|
 */
 
 exports.verifyStaff = async (
