@@ -486,7 +486,11 @@ app.get(
 // SALES REPORT
 // ======================================================
 
-app.get("/sales-report", verifyToken, async (req, res) => {
+app.get(
+  "/sales-report",
+  verifyToken,
+  requirePermission("reports"),
+  async (req, res) => {
   try {
     const shopId = req.user.shop_id;
 
@@ -520,8 +524,11 @@ app.get("/sales-report", verifyToken, async (req, res) => {
 // ======================================================
 // DASHBOARD
 // ======================================================
-
-app.get("/dashboard", verifyToken, async (req, res) => {
+app.get(
+  "/dashboard",
+  verifyToken,
+  requirePermission("reports"),
+  async (req, res) => {
   try {
     const shopId = req.user.shop_id;
     const { filter = "today", startDate, endDate } = req.query;
@@ -765,8 +772,11 @@ app.put("/staff/:id/status", verifyToken, async (req, res) => {
 // ======================================================
 // STAFF SALES
 // ======================================================
-
-app.get("/staff-sales", verifyToken, async (req, res) => {
+app.get(
+  "/staff-sales",
+  verifyToken,
+  requirePermission("reports"),
+  async (req, res) => {
   try {
     const shopId = req.user.shop_id;
 
@@ -803,8 +813,11 @@ app.get("/staff-sales", verifyToken, async (req, res) => {
 // ======================================================
 // PROFIT REPORT
 // ======================================================
-
-app.get("/profit-report", verifyToken, async (req, res) => {
+app.get(
+  "/profit-report",
+  verifyToken,
+  requirePermission("reports"),
+  async (req, res) => {
   try {
     const shopId = req.user.shop_id;
     const { startDate, endDate } = req.query;
