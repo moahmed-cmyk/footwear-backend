@@ -742,6 +742,8 @@ app.get(
 // SUBSCRIPTION STATUS
 // ======================================================
 app.get("/subscription-status", verifyToken, async (req, res) => {
+  
+console.log("SUBSCRIPTION USER:", req.user);
   try {
     const shopId = req.user.shop_id;
 
