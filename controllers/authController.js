@@ -1116,28 +1116,34 @@ const shopId = Number(shopSequence[0].shop_id);
     |--------------------------------------------------------------------------
     */
 
-    await connection.query(
-      `
-      INSERT INTO shops
-      (
-        id,
-        shop_name,
-        owner_name,
-        phone,
-        address,
-        gst_number
-      )
-      VALUES (?, ?, ?, ?, ?, ?)
-      `,
-      [
-        shopId,
-        shop_name.trim(),
-        owner_name.trim(),
-        normalizedPhone,
-        address || null,
-        gst_number || null,
-      ]
-    );
+   await connection.query(
+  `
+  INSERT INTO shops
+  (
+    id,
+    shop_name,
+    owner_name,
+    phone,
+    address,
+    gst_number,
+    subscription_status,
+    subscription_end_date
+  )
+  VALUES (
+    ?, ?, ?, ?, ?, ?,
+    'active',
+    DATE_ADD(CURRENT_DATE, INTERVAL 30 DAY)
+  )
+  `,
+  [
+    shopId,
+    shop_name.trim(),
+    owner_name.trim(),
+    normalizedPhone,
+    address || null,
+    gst_number || null,
+  ]
+);
 
     /*
     |--------------------------------------------------------------------------
