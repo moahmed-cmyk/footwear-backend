@@ -3,7 +3,7 @@ const cors = require("cors");
 const dotenv = require("dotenv");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-
+const subscriptionRoutes = require("./routes/subscriptionRoutes");
 const authRoutes = require("./routes/authRoutes");
 
 const db = require("./config/db");
