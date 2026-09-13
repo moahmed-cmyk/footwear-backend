@@ -652,8 +652,11 @@ app.get("/dashboard", verifyToken, async (req, res) => {
 // ======================================================
 // LOW STOCK
 // ======================================================
-
-app.get("/low-stock", verifyToken, async (req, res) => {
+app.get(
+  "/low-stock",
+  verifyToken,
+  requirePermission("stock"),
+  async (req, res) => {
   try {
     const shopId = req.user.shop_id;
 
