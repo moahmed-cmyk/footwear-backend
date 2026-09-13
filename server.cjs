@@ -700,30 +700,36 @@ app.get(
 // STAFF LIST
 // ======================================================
 
-app.get("/staff", verifyToken, async (req, res) => {
-  try {
-    const shopId = req.user.shop_id;
+app.get(
+  "/staff",
+  verifyToken,
+  requirePermission("staff_management"),
+  async (req, res) => {
+    try {
+      const shopId = req.user.shop_id;
 
-    const [staff] = await db.query(
-      `SELECT id, username, role, status
-      FROM users
-      WHERE shop_id = ? AND role = 'staff'
-      ORDER BY id DESC`,
-      [shopId]
-    );
+      const [staff] = await db.query(
+        `SELECT id, username, role, status
+         FROM users
+         WHERE shop_id = ? AND role = 'staff'
+         ORDER BY id DESC`,
+        [shopId]
+      );
 
-    res.json({
-      success: true,
-      staff,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+      res.json({
+        success: true,
+        staff,
+      });
+    } catch (error) {
+      console.error("GET STAFF ERROR:", error);
+
+      res.status(500).json({
+        success: false,
+        error: error.message,
+      });
+    }
   }
-});
-
+);
 // ======================================================
 // STAFF STATUS
 // ======================================================
