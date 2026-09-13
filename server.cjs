@@ -741,45 +741,155 @@ app.get(
 // ======================================================
 // SUBSCRIPTION STATUS
 // ======================================================
-
 app.get("/subscription-status", verifyToken, async (req, res) => {
   try {
-    const [rows] = await db.query(
-      `SELECT
+    const shopId = req.user.shop_id;
+
+    // ---------------------------------------------------------
+    // GET SHOP SUBSCRIPTION
+    // ---------------------------------------------------------
+
+    const [shopRows] = await db.query(
+      `
+      SELECT
+        id,
         subscription_status,
         subscription_end_date
       FROM shops
-      WHERE id = ?`,
-      [req.user.shop_id]
+      WHERE id = ?
+      LIMIT 1
+      `,
+      [shopId]
     );
 
-    if (rows.length === 0) {
+    if (shopRows.length === 0) {
       return res.status(404).json({
         success: false,
         message: "Shop not found",
       });
     }
 
-    const shop = rows[0];
+    const shop = shopRows[0];
+
+    // ---------------------------------------------------------
+    // GET AVAILABLE PLANS
+    // ---------------------------------------------------------
+
+    const [plans] = await db.query(
+      `
+      SELECT
+        id,
+        plan_name,
+        price,
+        duration_days,
+        description
+      FROM subscription_plans
+      WHERE status = 'active'
+      ORDER BY price ASC
+      `
+    );
+
+    // ---------------------------------------------------------
+    // CALCULATE SUBSCRIPTION STATUS
+    // ---------------------------------------------------------
 
     const today = new Date();
-    const endDate = shop.subscription_end_date
-      ? new Date(shop.subscription_end_date)
-      : null;
 
-    const expired =
-      shop.subscription_status !== "active" ||
-      (endDate && endDate < today);
+    let expired = false;
+    let daysRemaining = 0;
 
-    res.json({
+    if (!shop.subscription_end_date) {
+      expired = true;
+    } else {
+      const endDate = new Date(shop.subscription_end_date);
+
+      // Remove time part for accurate day calculation
+      const todayDate = new Date(
+        today.getFullYear(),
+        today.getMonth(),
+        today.getDate()
+      );
+
+      const endDateOnly = new Date(
+        endDate.getFullYear(),
+        endDate.getMonth(),
+        endDate.getDate()
+      );
+
+      const difference =
+        endDateOnly.getTime() - todayDate.getTime();
+
+      daysRemaining = Math.max(
+        0,
+        Math.ceil(
+          difference / (1000 * 60 * 60 * 24)
+        )
+      );
+
+      if (
+        shop.subscription_status !== "active" ||
+        daysRemaining <= 0
+      ) {
+        expired = true;
+      }
+    }
+
+    // ---------------------------------------------------------
+    // FIND CURRENT PLAN
+    // ---------------------------------------------------------
+
+    let currentPlan = null;
+
+    /*
+     * Current trial is identified by:
+     * subscription_status = active
+     * and available plan named Free Trial.
+     *
+     * Later, when payment system is added,
+     * we will store the exact plan_id in shops.
+     */
+
+    if (
+      shop.subscription_status === "active" &&
+      plans.length > 0
+    ) {
+      const freeTrial = plans.find(
+        (plan) =>
+          String(plan.plan_name).toLowerCase() ===
+          "free trial"
+      );
+
+      if (freeTrial) {
+        currentPlan = freeTrial;
+      }
+    }
+
+    // ---------------------------------------------------------
+    // RESPONSE
+    // ---------------------------------------------------------
+
+    return res.json({
       success: true,
-      expired,
-      subscription_status: shop.subscription_status,
-      subscription_end_date: shop.subscription_end_date,
+
+      subscription: {
+        status: shop.subscription_status,
+        expired,
+        end_date: shop.subscription_end_date,
+        days_remaining: daysRemaining,
+        current_plan: currentPlan,
+      },
+
+      plans,
     });
   } catch (error) {
-    res.status(500).json({
+    console.error(
+      "SUBSCRIPTION STATUS ERROR:",
+      error
+    );
+
+    return res.status(500).json({
       success: false,
+      message: "Failed to get subscription status",
       error: error.message,
     });
   }
