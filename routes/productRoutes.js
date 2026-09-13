@@ -9,6 +9,7 @@ const upload = multer({
 });
 
 const verifyToken = require("../middleware/authMiddleware");
+const requirePermission = require("../middleware/permissionMiddleware");
 
 const {
   addProduct,
@@ -23,6 +24,7 @@ const {
 router.post(
   "/products",
   verifyToken,
+  requirePermission("products"),
   addProduct
 );
 
@@ -30,6 +32,7 @@ router.post(
 router.get(
   "/products",
   verifyToken,
+  requirePermission("products"),
   getProducts
 );
 
@@ -37,6 +40,7 @@ router.get(
 router.put(
   "/products/:id",
   verifyToken,
+  requirePermission("products"),
   updateProduct
 );
 
@@ -44,6 +48,7 @@ router.put(
 router.delete(
   "/products/:id",
   verifyToken,
+  requirePermission("products"),
   deleteProduct
 );
 
@@ -51,6 +56,7 @@ router.delete(
 router.get(
   "/products/:id/stock-history",
   verifyToken,
+  requirePermission("stock"),
   getStockHistory
 );
 
@@ -58,6 +64,7 @@ router.get(
 router.post(
   "/products/import",
   verifyToken,
+  requirePermission("products"),
   upload.single("file"),
   importProducts
 );
