@@ -11,6 +11,8 @@ const razorpay = new Razorpay({
 // CREATE SUBSCRIPTION ORDER
 // =====================================================
 exports.createSubscriptionOrder = async (req, res) => {
+
+    console.log("CREATE ORDER USER:", req.user);
   try {
     const shopId = req.user.shop_id;
     const { plan_id } = req.body;
