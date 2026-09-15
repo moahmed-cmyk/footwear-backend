@@ -5,6 +5,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const subscriptionRoutes = require("./routes/subscriptionRoutes");
 const authRoutes = require("./routes/authRoutes");
+const checkSubscription = require("./middleware/subscriptionMiddleware");
 
 const db = require("./config/db");
 const verifyToken = require("./middleware/authMiddleware");
@@ -22,12 +23,22 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// ======================================================
+// AUTH + SUBSCRIPTION ROUTES
+// These must work even when subscription is expired
+// ======================================================
+
 app.use("/", authRoutes);
 app.use("/", subscriptionRoutes);
-app.use("/", dashboardRoutes);
-app.use("/", productRoutes);
-app.use("/", billRoutes);
-app.use("/", purchaseRoutes);
+
+// ======================================================
+// SUBSCRIPTION PROTECTED BUSINESS ROUTES
+// ======================================================
+
+app.use("/", verifyToken, checkSubscription, dashboardRoutes);
+app.use("/", verifyToken, checkSubscription, productRoutes);
+app.use("/", verifyToken, checkSubscription, billRoutes);
+app.use("/", verifyToken, checkSubscription, purchaseRoutes);
 
 // ======================================================
 // ROOT
@@ -56,6 +67,7 @@ app.get("/", async (req, res) => {
 app.get(
   "/net-profit",
   verifyToken,
+  checkSubscription,
   requirePermission("reports"),
   async (req, res) => {
   try {
@@ -134,6 +146,7 @@ app.get(
 app.post(
   "/expenses",
   verifyToken,
+  checkSubscription,
   requirePermission("expenses"),
   async (req, res) => {
     try {
@@ -179,6 +192,7 @@ app.post(
 app.get(
   "/expenses",
   verifyToken,
+  checkSubscription,
   requirePermission("expenses"),
   async (req, res) => {
     try {
@@ -214,6 +228,7 @@ app.get(
 app.put(
   "/expenses/:id",
   verifyToken,
+  checkSubscription,
   requirePermission("expenses"),
   async (req, res) => {
     try {
@@ -272,6 +287,7 @@ app.put(
 app.delete(
   "/expenses/:id",
   verifyToken,
+  checkSubscription,
   requirePermission("expenses"),
   async (req, res) => {
     try {
@@ -324,6 +340,7 @@ app.delete(
 app.get(
   "/monthly-top-selling",
   verifyToken,
+  checkSubscription,
   requirePermission("reports"),
   async (req, res) => {
   try {
@@ -364,6 +381,7 @@ app.get(
 app.get(
   "/sales-report",
   verifyToken,
+  checkSubscription,
   requirePermission("reports"),
   async (req, res) => {
   try {
@@ -402,6 +420,7 @@ app.get(
 app.get(
   "/dashboard",
   verifyToken,
+  checkSubscription,
   requirePermission("reports"),
   async (req, res) => {
   try {
@@ -537,6 +556,7 @@ app.get(
 app.get(
   "/low-stock",
   verifyToken,
+  checkSubscription,
   requirePermission("stock"),
   async (req, res) => {
   try {
@@ -578,6 +598,7 @@ app.get(
 app.get(
   "/staff",
   verifyToken,
+  checkSubscription,
   requirePermission("staff_management"),
   async (req, res) => {
     try {
@@ -656,6 +677,7 @@ app.put("/staff/:id/status", verifyToken, async (req, res) => {
 app.get(
   "/staff-sales",
   verifyToken,
+  checkSubscription,
   requirePermission("reports"),
   async (req, res) => {
   try {
@@ -697,6 +719,7 @@ app.get(
 app.get(
   "/profit-report",
   verifyToken,
+  checkSubscription,
   requirePermission("reports"),
   async (req, res) => {
   try {
@@ -791,21 +814,29 @@ app.get("/subscription-status", verifyToken, async (req, res) => {
     // GET AVAILABLE PLANS
     // ---------------------------------------------------------
 
-    const [plans] = await db.query(
-      `
-      SELECT
-        id,
-        plan_name,
-        price,
-        duration_days,
-        description,
-        status
-      FROM subscription_plans
-      WHERE status = 'active'
-      ORDER BY price ASC
-      `
-    );
-
+const [plans] = await db.query(
+  `
+  SELECT
+    id,
+    plan_name,
+    price,
+    duration_days,
+    description,
+    status
+  FROM subscription_plans
+  WHERE status = 'active'
+    AND (
+      plan_name <> 'Free Trial'
+      OR (
+        plan_name = 'Free Trial'
+        AND subscription_plan_id = 3
+        AND subscription_status = 'active'
+        AND subscription_end_date >= CURDATE()
+      )
+    )
+  ORDER BY price ASC
+  `
+);
     // ---------------------------------------------------------
     // CALCULATE SUBSCRIPTION STATUS
     // ---------------------------------------------------------

@@ -4,6 +4,7 @@ const router = express.Router();
 
 const authController = require("../controllers/authController");
 const verifyToken = require("../middleware/authMiddleware");
+const checkSubscription = require("../middleware/subscriptionMiddleware");
 const permissionController = require("../controllers/permissionController");
 const requirePermission = require("../middleware/permissionMiddleware");
 /*
@@ -150,6 +151,7 @@ router.post(
 router.get(
   "/staff/my-permissions",
   verifyToken,
+  checkSubscription,
   permissionController.getMyPermissions
 );
 
@@ -157,6 +159,7 @@ router.get(
 router.get(
   "/staff/:id/permissions",
   verifyToken,
+    checkSubscription,
   permissionController.getStaffPermissions
 );
 
@@ -164,6 +167,7 @@ router.get(
 router.put(
   "/staff/:id/permissions",
   verifyToken,
+    checkSubscription,
   permissionController.updateStaffPermissions
 );
 
@@ -201,6 +205,8 @@ router.post(
 router.post(
   "/add-staff",
   verifyToken,
+    checkSubscription,
+
   requirePermission("staff_management"),
   authController.addStaff
 );
