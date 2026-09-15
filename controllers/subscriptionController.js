@@ -17,6 +17,19 @@ exports.createSubscriptionOrder = async (req, res) => {
     const shopId = req.user.shop_id;
     const { plan_id } = req.body;
 
+    // ======================================================
+// FREE TRIAL SECURITY
+// Free Trial can NEVER be purchased/activated again
+// ======================================================
+
+if (Number(planId) === 3) {
+  return res.status(403).json({
+    success: false,
+    message: "Free Trial is available only for first-time registration.",
+    subscription_expired: false,
+  });
+}
+
     if (!shopId) {
       return res.status(401).json({
         success: false,
