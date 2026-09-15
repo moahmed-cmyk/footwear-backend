@@ -4,6 +4,10 @@ const db = require("../config/db");
 // REPORTS
 // ======================================================
 
+// ======================================================
+// REPORTS
+// ======================================================
+
 exports.getReports = async (req, res) => {
   try {
     const shopId = req.user.shop_id;
@@ -24,7 +28,6 @@ exports.getReports = async (req, res) => {
     const billParams = [shopId];
     const expenseParams = [shopId];
 
-    // TODAY
     if (filter === "today") {
       billDateWhere = `
         AND DATE(b.created_at) = CURDATE()
@@ -35,7 +38,6 @@ exports.getReports = async (req, res) => {
       `;
     }
 
-    // THIS WEEK
     else if (filter === "week") {
       billDateWhere = `
         AND DATE(b.created_at)
@@ -50,7 +52,6 @@ exports.getReports = async (req, res) => {
       `;
     }
 
-    // THIS MONTH
     else if (filter === "month") {
       billDateWhere = `
         AND MONTH(b.created_at) = MONTH(CURDATE())
@@ -63,7 +64,6 @@ exports.getReports = async (req, res) => {
       `;
     }
 
-    // CUSTOM DATE
     else if (filter === "custom") {
       if (!startDate || !endDate) {
         return res.status(400).json({
@@ -84,7 +84,6 @@ exports.getReports = async (req, res) => {
       expenseParams.push(startDate, endDate);
     }
 
-    // INVALID FILTER
     else {
       return res.status(400).json({
         success: false,
@@ -99,12 +98,9 @@ exports.getReports = async (req, res) => {
     const [salesRows] = await db.query(
       `
       SELECT
+        COALESCE(SUM(b.total), 0) AS total_sales,
 
-        COALESCE(SUM(b.total), 0)
-          AS total_sales,
-
-        COUNT(b.id)
-          AS total_bills,
+        COUNT(b.id) AS total_bills,
 
         COALESCE(
           (
@@ -113,19 +109,19 @@ exports.getReports = async (req, res) => {
             INNER JOIN bills bb
               ON bb.id = bi.bill_id
             WHERE bb.shop_id = ?
-            ${billDateWhere.replace(/b\./g, "bb.")}
+            ${billDateWhere.replace(
+              /b\./g,
+              "bb."
+            )}
           ),
           0
         ) AS total_items,
 
-        COALESCE(SUM(b.discount), 0)
-          AS total_discount,
+        COALESCE(SUM(b.discount), 0) AS total_discount,
 
-        COALESCE(SUM(b.cash_amount), 0)
-          AS cash_sales,
+        COALESCE(SUM(b.cash_amount), 0) AS cash_sales,
 
-        COALESCE(SUM(b.upi_amount), 0)
-          AS upi_sales,
+        COALESCE(SUM(b.upi_amount), 0) AS upi_sales,
 
         COALESCE(
           SUM(
@@ -155,11 +151,9 @@ exports.getReports = async (req, res) => {
     const [profitRows] = await db.query(
       `
       SELECT
-        COALESCE(SUM(bi.profit), 0)
-          AS item_profit,
+        COALESCE(SUM(bi.profit), 0) AS item_profit,
 
-        COALESCE(SUM(b.discount), 0)
-          AS total_discount
+        COALESCE(SUM(b.discount), 0) AS total_discount
 
       FROM bills b
 
@@ -180,8 +174,7 @@ exports.getReports = async (req, res) => {
     const [expenseRows] = await db.query(
       `
       SELECT
-        COALESCE(SUM(amount), 0)
-          AS total_expenses
+        COALESCE(SUM(amount), 0) AS total_expenses
 
       FROM expenses
 
@@ -214,11 +207,9 @@ exports.getReports = async (req, res) => {
     const totalExpenses =
       Number(expenseRows[0].total_expenses || 0);
 
-    // Profit after bill discount
     const totalProfit =
       itemProfit - totalDiscount;
 
-    // Net profit after expenses
     const netProfit =
       totalProfit - totalExpenses;
 
@@ -235,9 +226,8 @@ exports.getReports = async (req, res) => {
     // 4. STAFF SALES
     // ==================================================
 
-    const staffParams = [shopId];
-
     let staffDateWhere = "";
+    const staffParams = [shopId];
 
     if (filter === "today") {
       staffDateWhere = `
@@ -271,41 +261,27 @@ exports.getReports = async (req, res) => {
     const [staffRows] = await db.query(
       `
       SELECT
-
         u.id AS staff_id,
 
         u.username AS staff_name,
 
-        COUNT(DISTINCT b.id)
-          AS total_bills,
+        COUNT(DISTINCT b.id) AS total_bills,
 
-        COALESCE(SUM(b.total), 0)
-          AS total_sales,
+        COALESCE(SUM(b.total), 0) AS total_sales,
 
-        COALESCE(SUM(b.discount), 0)
-          AS total_discount,
+        COALESCE(SUM(b.discount), 0) AS total_discount,
 
-        COALESCE(
-          (
-            SELECT SUM(bi2.profit)
-            FROM bill_items bi2
-            WHERE bi2.bill_id IN (
-              SELECT b2.id
-              FROM bills b2
-              WHERE b2.created_by = u.id
-                AND b2.shop_id = ?
-                ${staffDateWhere}
-            )
-          ),
-          0
-        ) AS total_profit
+        COALESCE(SUM(bi.profit), 0) AS total_profit
 
       FROM users u
 
       LEFT JOIN bills b
         ON b.created_by = u.id
-        AND b.shop_id = u.shop_id
+        AND b.shop_id = ?
         ${staffDateWhere}
+
+      LEFT JOIN bill_items bi
+        ON bi.bill_id = b.id
 
       WHERE u.shop_id = ?
         AND LOWER(u.role) = 'staff'
@@ -318,8 +294,9 @@ exports.getReports = async (req, res) => {
       `,
       [
         shopId,
-        ...staffParams,
-        ...staffParams,
+        ...(filter === "custom"
+          ? [startDate, endDate]
+          : []),
         shopId,
       ]
     );
@@ -366,7 +343,6 @@ exports.getReports = async (req, res) => {
     });
   }
 };
-
 
 // ======================================================
 // STAFF PERFORMANCE

@@ -6,7 +6,6 @@ const jwt = require("jsonwebtoken");
 const subscriptionRoutes = require("./routes/subscriptionRoutes");
 const authRoutes = require("./routes/authRoutes");
 const checkSubscription = require("./middleware/subscriptionMiddleware");
-
 const db = require("./config/db");
 const verifyToken = require("./middleware/authMiddleware");
 const requirePermission = require("./middleware/permissionMiddleware");
@@ -15,6 +14,7 @@ const productRoutes = require("./routes/productRoutes");
 const billRoutes = require("./routes/billRoutes");
 const dashboardRoutes = require("./routes/dashboardRoutes");
 const purchaseRoutes = require("./routes/purchaseRoutes");
+const reportRoutes = require("./routes/reportRoutes");
 
 dotenv.config();
 
@@ -39,6 +39,7 @@ app.use("/", verifyToken, checkSubscription, dashboardRoutes);
 app.use("/", verifyToken, checkSubscription, productRoutes);
 app.use("/", verifyToken, checkSubscription, billRoutes);
 app.use("/", verifyToken, checkSubscription, purchaseRoutes);
+app.use("/", verifyToken, checkSubscription, reportRoutes);
 
 // ======================================================
 // ROOT
