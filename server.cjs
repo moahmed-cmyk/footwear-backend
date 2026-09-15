@@ -817,25 +817,28 @@ app.get("/subscription-status", verifyToken, async (req, res) => {
 const [plans] = await db.query(
   `
   SELECT
-    id,
-    plan_name,
-    price,
-    duration_days,
-    description,
-    status
-  FROM subscription_plans
-  WHERE status = 'active'
+    p.id,
+    p.plan_name,
+    p.price,
+    p.duration_days,
+    p.description,
+    p.status
+  FROM subscription_plans p
+  INNER JOIN shops s
+    ON s.id = ?
+  WHERE p.status = 'active'
     AND (
-      plan_name <> 'Free Trial'
+      p.plan_name <> 'Free Trial'
       OR (
-        plan_name = 'Free Trial'
-        AND subscription_plan_id = 3
-        AND subscription_status = 'active'
-        AND subscription_end_date >= CURDATE()
+        p.id = 3
+        AND s.subscription_plan_id = 3
+        AND s.subscription_status = 'active'
+        AND s.subscription_end_date >= CURDATE()
       )
     )
-  ORDER BY price ASC
-  `
+  ORDER BY p.price ASC
+  `,
+  [shopId]
 );
     // ---------------------------------------------------------
     // CALCULATE SUBSCRIPTION STATUS
