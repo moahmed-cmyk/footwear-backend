@@ -572,28 +572,43 @@ exports.verifyOtp = async (req, res) => {
 
     /*
     |--------------------------------------------------------------------------
-    | CHECK SUBSCRIPTION
+    | CHECK SUBSCRIPTION STATUS
     |--------------------------------------------------------------------------
+    |
+    | IMPORTANT:
+    | Expired subscription MUST NOT block login.
+    |
+    | We issue the JWT token even when the subscription
+    | is expired. Flutter will use subscription_expired
+    | to open SubscriptionExpiredPage.
+    |
     */
 
     const today = new Date();
+    today.setHours(0, 0, 0, 0);
 
-    const endDate =
-      shop.subscription_end_date
-        ? new Date(
-            shop.subscription_end_date
-          )
-        : null;
+    let subscriptionExpired = false;
 
     if (
-      shop.subscription_status !== "active" ||
-      (endDate && endDate < today)
+      shop.subscription_status !== "active"
     ) {
-      return res.status(403).json({
-        success: false,
-        message:
-          "Subscription expired. Please renew your plan.",
-      });
+      subscriptionExpired = true;
+    }
+
+    if (shop.subscription_end_date) {
+      const endDate =
+        new Date(
+          shop.subscription_end_date
+        );
+
+      endDate.setHours(0, 0, 0, 0);
+
+      if (endDate < today) {
+        subscriptionExpired = true;
+      }
+    } else {
+      // No subscription end date = treat as expired
+      subscriptionExpired = true;
     }
 
     /*
@@ -618,6 +633,10 @@ exports.verifyOtp = async (req, res) => {
 
       token,
 
+      // IMPORTANT FOR FLUTTER ROUTING
+      subscription_expired:
+        subscriptionExpired,
+
       user: {
         id: user.id,
         shop_id: user.shop_id,
@@ -633,10 +652,13 @@ exports.verifyOtp = async (req, res) => {
         phone: shop.phone,
         address: shop.address,
         gst_number: shop.gst_number,
+
         subscription_plan_id:
           shop.subscription_plan_id,
+
         subscription_status:
           shop.subscription_status,
+
         subscription_end_date:
           shop.subscription_end_date,
       },

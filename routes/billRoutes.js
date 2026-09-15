@@ -1,5 +1,5 @@
 const express = require("express");
-
+const checkSubscription = require("../middleware/subscriptionMiddleware");
 const router = express.Router();
 
 const {
