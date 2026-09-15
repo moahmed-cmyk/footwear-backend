@@ -742,27 +742,41 @@ app.get(
 // SUBSCRIPTION STATUS
 // ======================================================
 app.get("/subscription-status", verifyToken, async (req, res) => {
-  
-console.log("SUBSCRIPTION USER:", req.user);
+  console.log("SUBSCRIPTION USER:", req.user);
+
   try {
     const shopId = req.user.shop_id;
 
     // ---------------------------------------------------------
-    // GET SHOP SUBSCRIPTION
+    // GET SHOP + CURRENT SUBSCRIPTION PLAN
     // ---------------------------------------------------------
 
     const [shopRows] = await db.query(
       `
       SELECT
-        id,
-        subscription_status,
-        subscription_end_date
-      FROM shops
-      WHERE id = ?
+        s.id,
+        s.shop_name,
+        s.subscription_status,
+        s.subscription_end_date,
+
+        p.id AS plan_id,
+        p.plan_name,
+        p.price,
+        p.duration_days,
+        p.description
+
+      FROM shops s
+
+      LEFT JOIN subscription_plans p
+        ON p.id = s.subscription_plan_id
+
+      WHERE s.id = ?
       LIMIT 1
       `,
       [shopId]
     );
+
+    console.log("SUBSCRIPTION CHECK DB:", shopRows);
 
     if (shopRows.length === 0) {
       return res.status(404).json({
@@ -784,7 +798,8 @@ console.log("SUBSCRIPTION USER:", req.user);
         plan_name,
         price,
         duration_days,
-        description
+        description,
+        status
       FROM subscription_plans
       WHERE status = 'active'
       ORDER BY price ASC
@@ -805,7 +820,6 @@ console.log("SUBSCRIPTION USER:", req.user);
     } else {
       const endDate = new Date(shop.subscription_end_date);
 
-      // Remove time part for accurate day calculation
       const todayDate = new Date(
         today.getFullYear(),
         today.getMonth(),
@@ -837,33 +851,19 @@ console.log("SUBSCRIPTION USER:", req.user);
     }
 
     // ---------------------------------------------------------
-    // FIND CURRENT PLAN
+    // CURRENT PLAN
     // ---------------------------------------------------------
 
     let currentPlan = null;
 
-    /*
-     * Current trial is identified by:
-     * subscription_status = active
-     * and available plan named Free Trial.
-     *
-     * Later, when payment system is added,
-     * we will store the exact plan_id in shops.
-     */
-
-    if (
-      shop.subscription_status === "active" &&
-      plans.length > 0
-    ) {
-      const freeTrial = plans.find(
-        (plan) =>
-          String(plan.plan_name).toLowerCase() ===
-          "free trial"
-      );
-
-      if (freeTrial) {
-        currentPlan = freeTrial;
-      }
+    if (shop.plan_id) {
+      currentPlan = {
+        id: shop.plan_id,
+        plan_name: shop.plan_name,
+        price: Number(shop.price),
+        duration_days: shop.duration_days,
+        description: shop.description,
+      };
     }
 
     // ---------------------------------------------------------
@@ -874,15 +874,25 @@ console.log("SUBSCRIPTION USER:", req.user);
       success: true,
 
       subscription: {
-        status: shop.subscription_status,
+        shop_id: shop.id,
+        shop_name: shop.shop_name,
+
+        status: expired
+          ? "expired"
+          : shop.subscription_status,
+
         expired,
+
         end_date: shop.subscription_end_date,
+
         days_remaining: daysRemaining,
+
         current_plan: currentPlan,
       },
 
       plans,
     });
+
   } catch (error) {
     console.error(
       "SUBSCRIPTION STATUS ERROR:",
@@ -896,7 +906,6 @@ console.log("SUBSCRIPTION USER:", req.user);
     });
   }
 });
-
 // ======================================================
 // NOTIFICATIONS
 // ======================================================
