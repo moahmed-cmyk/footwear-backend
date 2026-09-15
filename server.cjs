@@ -39,7 +39,7 @@ app.use("/", verifyToken, checkSubscription, dashboardRoutes);
 app.use("/", verifyToken, checkSubscription, productRoutes);
 app.use("/", verifyToken, checkSubscription, billRoutes);
 app.use("/", verifyToken, checkSubscription, purchaseRoutes);
-app.use("/", verifyToken, checkSubscription, reportRoutes);
+app.use("/reports", verifyToken, checkSubscription, reportRoutes);
 
 // ======================================================
 // ROOT
