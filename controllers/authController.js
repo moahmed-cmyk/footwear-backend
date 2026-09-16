@@ -1360,6 +1360,11 @@ exports.addStaff = async (req, res) => {
 | VERIFY STAFF INVITATION
 |--------------------------------------------------------------------------
 */
+/*
+|--------------------------------------------------------------------------
+| VERIFY STAFF INVITATION
+|--------------------------------------------------------------------------
+*/
 
 exports.verifyStaff = async (
   req,
@@ -1590,80 +1595,146 @@ exports.verifyStaff = async (
       error: error.message,
     });
   }
+};
 
-  // ============================================================
-// CHANGE STAFF NAME
-// ============================================================
 
-exports.changeStaffName = async (req, res) => {
+/*
+|--------------------------------------------------------------------------
+| CHANGE STAFF NAME
+|--------------------------------------------------------------------------
+*/
+
+exports.changeStaffName = async (
+  req,
+  res
+) => {
   try {
-    const db = require("../config/db");
+    // ============================================================
+    // LOGGED-IN OWNER
+    // ============================================================
 
-    // Logged-in user information comes from JWT
-    const ownerShopId = req.user.shop_id;
-    const ownerRole = req.user.role;
+    const ownerShopId =
+      Number(req.user.shop_id);
 
-    // Only owner can change staff name
+    const ownerRole =
+      String(req.user.role || "")
+        .toLowerCase();
+
+    // ============================================================
+    // OWNER ONLY
+    // ============================================================
+
     if (ownerRole !== "owner") {
       return res.status(403).json({
         success: false,
-        message: "Only owner can change staff name",
+        message:
+          "Only owner can change staff name",
       });
     }
 
-    const staffId = Number(req.params.id);
-    const name = String(req.body.name || "").trim();
+    // ============================================================
+    // STAFF ID
+    // ============================================================
 
-    // Validate staff ID
-    if (!Number.isInteger(staffId) || staffId <= 0) {
+    const staffId =
+      Number(req.params.id);
+
+    // ============================================================
+    // STAFF NAME
+    // ============================================================
+
+    const name =
+      String(req.body.name || "")
+        .trim();
+
+    // ============================================================
+    // VALIDATE STAFF ID
+    // ============================================================
+
+    if (
+      !Number.isInteger(staffId) ||
+      staffId <= 0
+    ) {
       return res.status(400).json({
         success: false,
-        message: "Invalid staff ID",
+        message:
+          "Invalid staff ID",
       });
     }
 
-    // Validate name
+    // ============================================================
+    // VALIDATE SHOP
+    // ============================================================
+
+    if (
+      !Number.isInteger(ownerShopId) ||
+      ownerShopId <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Invalid shop",
+      });
+    }
+
+    // ============================================================
+    // VALIDATE NAME
+    // ============================================================
+
     if (!name) {
       return res.status(400).json({
         success: false,
-        message: "Staff name is required",
+        message:
+          "Staff name is required",
       });
     }
 
     if (name.length > 100) {
       return res.status(400).json({
         success: false,
-        message: "Staff name is too long",
+        message:
+          "Staff name is too long",
       });
     }
 
-    // ----------------------------------------------------------
-    // IMPORTANT:
-    // Check staff belongs to the logged-in owner's shop
-    // ----------------------------------------------------------
+    // ============================================================
+    // CHECK STAFF BELONGS TO OWNER SHOP
+    // ============================================================
 
-    const [staffRows] = await db.query(
-      `
-      SELECT id
-      FROM users
-      WHERE id = ?
-      AND shop_id = ?
-      AND role = 'staff'
-      LIMIT 1
-      `,
-      [staffId, ownerShopId]
-    );
+    const [staffRows] =
+      await db.query(
+        `
+        SELECT
+          id,
+          name,
+          phone,
+          role,
+          status
+        FROM users
+        WHERE id = ?
+        AND shop_id = ?
+        AND role = 'staff'
+        LIMIT 1
+        `,
+        [
+          staffId,
+          ownerShopId,
+        ]
+      );
 
-    if (staffRows.length === 0) {
+    if (
+      staffRows.length === 0
+    ) {
       return res.status(404).json({
         success: false,
-        message: "Staff not found",
+        message:
+          "Staff not found",
       });
     }
 
-    // ----------------------------------------------------------
-    // Update ONLY staff name
-    // ----------------------------------------------------------
+    // ============================================================
+    // UPDATE ONLY NAME
+    // ============================================================
 
     await db.query(
       `
@@ -1673,14 +1744,24 @@ exports.changeStaffName = async (req, res) => {
       AND shop_id = ?
       AND role = 'staff'
       `,
-      [name, staffId, ownerShopId]
+      [
+        name,
+        staffId,
+        ownerShopId,
+      ]
     );
+
+    // ============================================================
+    // SUCCESS
+    // ============================================================
 
     return res.status(200).json({
       success: true,
-      message: "Staff name updated successfully",
+      message:
+        "Staff name updated successfully",
       name: name,
     });
+
   } catch (error) {
     console.error(
       "CHANGE STAFF NAME ERROR:",
@@ -1689,9 +1770,9 @@ exports.changeStaffName = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: "Failed to change staff name",
+      message:
+        "Failed to change staff name",
       error: error.message,
     });
   }
-};
 };
