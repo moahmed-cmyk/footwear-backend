@@ -1,3 +1,1105 @@
+const db = require("../config/db");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
+
+/*
+|--------------------------------------------------------------------------
+| HELPER FUNCTIONS
+|--------------------------------------------------------------------------
+*/
+
+// Normalize Indian mobile number
+const normalizePhone = (phone) => {
+  if (!phone) return null;
+
+  let value = String(phone)
+    .trim()
+    .replace(/\s+/g, "");
+
+  if (value.startsWith("+91")) {
+    value = value.substring(3);
+  }
+
+  if (value.startsWith("91") && value.length === 12) {
+    value = value.substring(2);
+  }
+
+  return value;
+};
+
+// Generate 6 digit OTP
+const generateOtp = () => {
+  return crypto.randomInt(100000, 1000000).toString();
+};
+
+// Generate random password because users.password is NOT NULL
+const generateRandomPassword = () => {
+  return crypto.randomBytes(32).toString("hex");
+};
+
+/*
+|--------------------------------------------------------------------------
+| CREATE JWT TOKEN
+|--------------------------------------------------------------------------
+*/
+
+const createToken = (user) => {
+  return jwt.sign(
+    {
+      user_id: user.id,
+      shop_id: user.shop_id,
+      role: user.role,
+    },
+    process.env.JWT_SECRET,
+    {
+      expiresIn: "7d",
+    }
+  );
+};
+
+/*
+|--------------------------------------------------------------------------
+| SEND OTP
+|--------------------------------------------------------------------------
+*/
+
+exports.sendOtp = async (req, res) => {
+  try {
+    let {
+      phone,
+      purpose = "owner_login",
+    } = req.body;
+
+    const normalizedPhone = normalizePhone(phone);
+
+    if (!normalizedPhone) {
+      return res.status(400).json({
+        success: false,
+        message: "Phone number is required",
+      });
+    }
+
+    if (!/^[6-9]\d{9}$/.test(normalizedPhone)) {
+      return res.status(400).json({
+        success: false,
+        message: "Enter a valid Indian mobile number",
+      });
+    }
+
+    const allowedPurposes = [
+      "owner_auto",
+      "owner_login",
+      "staff_login",
+      "staff_invite",
+      "register_owner",
+    ];
+
+    if (!allowedPurposes.includes(purpose)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid OTP purpose",
+      });
+    }
+
+    // Find existing user
+    const [users] = await db.query(
+      `
+      SELECT
+        id,
+        shop_id,
+        username,
+        phone,
+        role,
+        status
+      FROM users
+      WHERE phone = ?
+      LIMIT 1
+      `,
+      [normalizedPhone]
+    );
+
+    const existingUser = users[0];
+
+    /*
+    |--------------------------------------------------------------------------
+    | OWNER AUTO FLOW
+    |--------------------------------------------------------------------------
+    */
+
+    let actualPurpose = purpose;
+    let isNewUser = false;
+
+    if (purpose === "owner_auto") {
+      if (existingUser) {
+        if (existingUser.role !== "owner") {
+          return res.status(403).json({
+            success: false,
+            message:
+              "This mobile number belongs to a staff account",
+          });
+        }
+
+        if (existingUser.status !== "active") {
+          return res.status(403).json({
+            success: false,
+            message: "This owner account is inactive",
+          });
+        }
+
+        actualPurpose = "owner_login";
+        isNewUser = false;
+      } else {
+        actualPurpose = "register_owner";
+        isNewUser = true;
+      }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | OWNER LOGIN
+    |--------------------------------------------------------------------------
+    */
+
+    if (actualPurpose === "owner_login") {
+      if (!existingUser) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "No owner account found with this mobile number",
+        });
+      }
+
+      if (existingUser.role !== "owner") {
+        return res.status(403).json({
+          success: false,
+          message:
+            "This mobile number belongs to a staff account",
+        });
+      }
+
+      if (existingUser.status !== "active") {
+        return res.status(403).json({
+          success: false,
+          message: "This owner account is inactive",
+        });
+      }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | STAFF LOGIN
+    |--------------------------------------------------------------------------
+    */
+
+    if (actualPurpose === "staff_login") {
+      if (!existingUser) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "No staff account found with this mobile number",
+        });
+      }
+
+      if (existingUser.role !== "staff") {
+        return res.status(403).json({
+          success: false,
+          message:
+            "This mobile number belongs to an owner account",
+        });
+      }
+
+      if (existingUser.status !== "active") {
+        return res.status(403).json({
+          success: false,
+          message:
+            "Staff account is disabled or not verified",
+        });
+      }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | NEW OWNER REGISTRATION
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+      actualPurpose === "register_owner" &&
+      existingUser
+    ) {
+      return res.status(409).json({
+        success: false,
+        message:
+          "An account already exists with this mobile number",
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | DELETE OLD OTP
+    |--------------------------------------------------------------------------
+    */
+
+    await db.query(
+      `
+      DELETE FROM otp_verifications
+      WHERE phone = ?
+      AND purpose = ?
+      `,
+      [normalizedPhone, actualPurpose]
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | GENERATE OTP
+    |--------------------------------------------------------------------------
+    */
+
+    const otp = generateOtp();
+
+    const otpHash = await bcrypt.hash(
+      otp,
+      10
+    );
+
+    const expiresAt = new Date(
+      Date.now() + 5 * 60 * 1000
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | SAVE OTP
+    |--------------------------------------------------------------------------
+    */
+
+    await db.query(
+      `
+      INSERT INTO otp_verifications
+      (
+        phone,
+        otp_hash,
+        purpose,
+        expires_at
+      )
+      VALUES (?, ?, ?, ?)
+      `,
+      [
+        normalizedPhone,
+        otpHash,
+        actualPurpose,
+        expiresAt,
+      ]
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | DEVELOPMENT OTP
+    |--------------------------------------------------------------------------
+    */
+
+    console.log(
+      `NIFORA OTP | ${normalizedPhone} | ${actualPurpose} | ${otp}`
+    );
+
+    const response = {
+      success: true,
+      message: "OTP sent successfully",
+      is_new_user: isNewUser,
+    };
+
+    if (process.env.NODE_ENV !== "production") {
+      response.devOtp = otp;
+    }
+
+    return res.json(response);
+  } catch (error) {
+    console.error(
+      "SEND OTP ERROR:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to send OTP",
+      error: error.message,
+    });
+  }
+};
+
+/*
+|--------------------------------------------------------------------------
+| VERIFY OTP
+|--------------------------------------------------------------------------
+*/
+
+exports.verifyOtp = async (req, res) => {
+  try {
+    const {
+      phone,
+      otp,
+      purpose = "owner_login",
+    } = req.body;
+
+    const normalizedPhone =
+      normalizePhone(phone);
+
+    if (!normalizedPhone || !otp) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Phone number and OTP are required",
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | FIND OTP
+    |--------------------------------------------------------------------------
+    */
+
+    const [rows] = await db.query(
+      `
+      SELECT *
+      FROM otp_verifications
+      WHERE phone = ?
+      AND purpose = ?
+      AND verified_at IS NULL
+      ORDER BY id DESC
+      LIMIT 1
+      `,
+      [
+        normalizedPhone,
+        purpose,
+      ]
+    );
+
+    const otpRecord = rows[0];
+
+    if (!otpRecord) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "OTP not found or already used",
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | CHECK EXPIRY
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+      new Date(otpRecord.expires_at) <
+      new Date()
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "OTP expired. Please request a new OTP",
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | CHECK ATTEMPTS
+    |--------------------------------------------------------------------------
+    */
+
+    if (otpRecord.attempts >= 5) {
+      return res.status(429).json({
+        success: false,
+        message:
+          "Too many incorrect attempts. Request a new OTP",
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | VERIFY OTP
+    |--------------------------------------------------------------------------
+    */
+
+    const isValid =
+      await bcrypt.compare(
+        String(otp),
+        otpRecord.otp_hash
+      );
+
+    if (!isValid) {
+      await db.query(
+        `
+        UPDATE otp_verifications
+        SET attempts = attempts + 1
+        WHERE id = ?
+        `,
+        [otpRecord.id]
+      );
+
+      return res.status(400).json({
+        success: false,
+        message: "Invalid OTP",
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | MARK OTP VERIFIED
+    |--------------------------------------------------------------------------
+    */
+
+    await db.query(
+      `
+      UPDATE otp_verifications
+      SET verified_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+      `,
+      [otpRecord.id]
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | NEW OWNER
+    |--------------------------------------------------------------------------
+    */
+
+    if (purpose === "register_owner") {
+      return res.json({
+        success: true,
+        verified: true,
+        is_new_user: true,
+        message:
+          "Mobile number verified successfully",
+        phone: normalizedPhone,
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | STAFF INVITATION
+    |--------------------------------------------------------------------------
+    */
+
+    if (purpose === "staff_invite") {
+      return res.json({
+        success: true,
+        verified: true,
+        message:
+          "Staff mobile number verified successfully",
+        phone: normalizedPhone,
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | FIND EXISTING USER
+    |--------------------------------------------------------------------------
+    */
+
+    const [users] = await db.query(
+      `
+      SELECT
+        id,
+        shop_id,
+        username,
+        phone,
+        role,
+        status
+      FROM users
+      WHERE phone = ?
+      LIMIT 1
+      `,
+      [normalizedPhone]
+    );
+
+    const user = users[0];
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "Account not found",
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | ACCOUNT STATUS
+    |--------------------------------------------------------------------------
+    */
+
+    if (user.status !== "active") {
+      return res.status(403).json({
+        success: false,
+        message:
+          "This account is inactive",
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | GET SHOP
+    |--------------------------------------------------------------------------
+    */
+
+    const [shops] = await db.query(
+      `
+      SELECT
+        id,
+        shop_name,
+        owner_name,
+        phone,
+        address,
+        gst_number,
+        subscription_plan_id,
+        subscription_status,
+        subscription_end_date
+      FROM shops
+      WHERE id = ?
+      LIMIT 1
+      `,
+      [user.shop_id]
+    );
+
+    const shop = shops[0];
+
+    if (!shop) {
+      return res.status(404).json({
+        success: false,
+        message: "Shop not found",
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | CHECK SUBSCRIPTION STATUS
+    |--------------------------------------------------------------------------
+    |
+    | IMPORTANT:
+    | Expired subscription MUST NOT block login.
+    |
+    | We issue the JWT token even when the subscription
+    | is expired. Flutter will use subscription_expired
+    | to open SubscriptionExpiredPage.
+    |
+    */
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    let subscriptionExpired = false;
+
+    if (
+      shop.subscription_status !== "active"
+    ) {
+      subscriptionExpired = true;
+    }
+
+    if (shop.subscription_end_date) {
+      const endDate =
+        new Date(
+          shop.subscription_end_date
+        );
+
+      endDate.setHours(0, 0, 0, 0);
+
+      if (endDate < today) {
+        subscriptionExpired = true;
+      }
+    } else {
+      // No subscription end date = treat as expired
+      subscriptionExpired = true;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | CREATE TOKEN
+    |--------------------------------------------------------------------------
+    */
+
+    const token = createToken(user);
+
+    /*
+    |--------------------------------------------------------------------------
+    | EXISTING USER LOGIN
+    |--------------------------------------------------------------------------
+    */
+
+    return res.json({
+      success: true,
+      verified: true,
+      is_new_user: false,
+      message: "Login successful",
+
+      token,
+
+      // IMPORTANT FOR FLUTTER ROUTING
+      subscription_expired:
+        subscriptionExpired,
+
+      user: {
+        id: user.id,
+        shop_id: user.shop_id,
+        username: user.username,
+        phone: user.phone,
+        role: user.role,
+      },
+
+      shop: {
+        id: shop.id,
+        shop_name: shop.shop_name,
+        owner_name: shop.owner_name,
+        phone: shop.phone,
+        address: shop.address,
+        gst_number: shop.gst_number,
+
+        subscription_plan_id:
+          shop.subscription_plan_id,
+
+        subscription_status:
+          shop.subscription_status,
+
+        subscription_end_date:
+          shop.subscription_end_date,
+      },
+    });
+  } catch (error) {
+    console.error(
+      "VERIFY OTP ERROR:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "OTP verification failed",
+      error: error.message,
+    });
+  }
+};
+
+/*
+|--------------------------------------------------------------------------
+| REGISTER OWNER / CREATE SHOP
+|--------------------------------------------------------------------------
+|
+| NEW:
+| Active Free Trial plan is automatically selected
+| from subscription_plans table.
+|
+*/
+
+exports.registerShop = async (
+  req,
+  res
+) => {
+  let connection;
+
+  try {
+    const {
+      shop_name,
+      owner_name,
+      phone,
+      address,
+      gst_number,
+      username,
+    } = req.body;
+
+    const normalizedPhone =
+      normalizePhone(phone);
+
+    /*
+    |--------------------------------------------------------------------------
+    | VALIDATION
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+      !shop_name ||
+      !owner_name ||
+      !normalizedPhone
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Shop name, owner name and phone are required",
+      });
+    }
+
+    if (
+      !/^[6-9]\d{9}$/.test(
+        normalizedPhone
+      )
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Enter a valid Indian mobile number",
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | CHECK VERIFIED OWNER OTP
+    |--------------------------------------------------------------------------
+    */
+
+    const [verifiedOtp] =
+      await db.query(
+        `
+        SELECT id
+        FROM otp_verifications
+        WHERE phone = ?
+        AND purpose = 'register_owner'
+        AND verified_at IS NOT NULL
+        AND verified_at >= DATE_SUB(
+          CURRENT_TIMESTAMP,
+          INTERVAL 15 MINUTE
+        )
+        ORDER BY id DESC
+        LIMIT 1
+        `,
+        [normalizedPhone]
+      );
+
+    if (!verifiedOtp.length) {
+      return res.status(403).json({
+        success: false,
+        message:
+          "Please verify your mobile number with OTP first",
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | CHECK EXISTING USER
+    |--------------------------------------------------------------------------
+    */
+
+    const [existingUsers] =
+      await db.query(
+        `
+        SELECT id
+        FROM users
+        WHERE phone = ?
+        LIMIT 1
+        `,
+        [normalizedPhone]
+      );
+
+    if (existingUsers.length) {
+      return res.status(409).json({
+        success: false,
+        message:
+          "An account already exists with this mobile number",
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | USERNAME
+    |--------------------------------------------------------------------------
+    */
+
+    const ownerUsername =
+      username &&
+      username.trim()
+        ? username.trim()
+        : normalizedPhone;
+
+    /*
+    |--------------------------------------------------------------------------
+    | RANDOM PASSWORD
+    |--------------------------------------------------------------------------
+    */
+
+    const randomPassword =
+      generateRandomPassword();
+
+    const hashedPassword =
+      await bcrypt.hash(
+        randomPassword,
+        10
+      );
+
+    /*
+    |--------------------------------------------------------------------------
+    | DATABASE TRANSACTION
+    |--------------------------------------------------------------------------
+    */
+
+    connection =
+      await db.getConnection();
+
+    await connection.beginTransaction();
+
+    /*
+    |--------------------------------------------------------------------------
+    | GET ACTIVE FREE TRIAL PLAN
+    |--------------------------------------------------------------------------
+    |
+    | We do NOT hard-code plan id = 3.
+    | The active Free Trial plan is found
+    | automatically from subscription_plans.
+    |
+    */
+
+    const [freeTrialPlans] =
+      await connection.query(
+        `
+        SELECT
+          id,
+          duration_days
+        FROM subscription_plans
+        WHERE plan_name = 'Free Trial'
+        AND status = 'active'
+        ORDER BY id ASC
+        LIMIT 1
+        `
+      );
+
+    if (!freeTrialPlans.length) {
+      throw new Error(
+        "Active Free Trial subscription plan not found"
+      );
+    }
+
+    const freeTrialPlanId =
+      Number(
+        freeTrialPlans[0].id
+      );
+
+    const freeTrialDays =
+      Number(
+        freeTrialPlans[0].duration_days
+      );
+
+    if (
+      !Number.isInteger(
+        freeTrialPlanId
+      ) ||
+      !Number.isInteger(
+        freeTrialDays
+      ) ||
+      freeTrialDays <= 0
+    ) {
+      throw new Error(
+        "Invalid Free Trial plan configuration"
+      );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | GET SHOP ID FROM TIDB SEQUENCE
+    |--------------------------------------------------------------------------
+    */
+
+    const [shopSequence] =
+      await connection.query(
+        `
+        SELECT NEXT VALUE FOR shops_id_seq AS shop_id
+        `
+      );
+
+    const shopId =
+      Number(
+        shopSequence[0].shop_id
+      );
+
+    /*
+    |--------------------------------------------------------------------------
+    | CREATE SHOP
+    |--------------------------------------------------------------------------
+    */
+
+    await connection.query(
+      `
+      INSERT INTO shops
+      (
+        id,
+        shop_name,
+        owner_name,
+        phone,
+        address,
+        gst_number,
+        subscription_plan_id,
+        subscription_status,
+        subscription_end_date
+      )
+      VALUES (
+        ?, ?, ?, ?, ?, ?, ?,
+        'active',
+        DATE_ADD(
+          CURRENT_DATE,
+          INTERVAL ${freeTrialDays} DAY
+        )
+      )
+      `,
+      [
+        shopId,
+        shop_name.trim(),
+        owner_name.trim(),
+        normalizedPhone,
+        address || null,
+        gst_number || null,
+        freeTrialPlanId,
+      ]
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | GET USER ID FROM TIDB SEQUENCE
+    |--------------------------------------------------------------------------
+    */
+
+    const [userSequence] =
+      await connection.query(
+        `
+        SELECT NEXT VALUE FOR users_id_seq AS user_id
+        `
+      );
+
+    const userId =
+      Number(
+        userSequence[0].user_id
+      );
+
+    /*
+    |--------------------------------------------------------------------------
+    | CREATE OWNER USER
+    |--------------------------------------------------------------------------
+    */
+
+    await connection.query(
+      `
+      INSERT INTO users
+      (
+        id,
+        shop_id,
+        username,
+        password,
+        role,
+        status,
+        phone
+      )
+      VALUES (?, ?, ?, ?, 'owner', 'active', ?)
+      `,
+      [
+        userId,
+        shopId,
+        ownerUsername,
+        hashedPassword,
+        normalizedPhone,
+      ]
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | COMMIT
+    |--------------------------------------------------------------------------
+    */
+
+    await connection.commit();
+
+    /*
+    |--------------------------------------------------------------------------
+    | CREATE TOKEN
+    |--------------------------------------------------------------------------
+    */
+
+    const user = {
+      id: userId,
+      shop_id: shopId,
+      role: "owner",
+    };
+
+    const token =
+      createToken(user);
+
+    /*
+    |--------------------------------------------------------------------------
+    | RESPONSE
+    |--------------------------------------------------------------------------
+    */
+
+    return res.status(201).json({
+      success: true,
+      message:
+        "Shop registered successfully",
+
+      token,
+
+      user: {
+        id: userId,
+        username: ownerUsername,
+        phone: normalizedPhone,
+        role: "owner",
+        shop_id: shopId,
+      },
+
+      shop: {
+        id: shopId,
+        shop_name:
+          shop_name.trim(),
+        owner_name:
+          owner_name.trim(),
+        subscription_plan_id:
+          freeTrialPlanId,
+        subscription_status:
+          "active",
+      },
+    });
+  } catch (error) {
+    /*
+    |--------------------------------------------------------------------------
+    | ROLLBACK
+    |--------------------------------------------------------------------------
+    */
+
+    if (connection) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error(
+          "ROLLBACK ERROR:",
+          rollbackError
+        );
+      }
+    }
+
+    console.error(
+      "REGISTER SHOP ERROR:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Shop registration failed",
+      error: error.message,
+    });
+  } finally {
+    /*
+    |--------------------------------------------------------------------------
+    | RELEASE CONNECTION
+    |--------------------------------------------------------------------------
+    */
+
+    if (connection) {
+      connection.release();
+    }
+  }
+};
+
+/*
+|--------------------------------------------------------------------------
+| ADD STAFF
+|--------------------------------------------------------------------------
+|
+| Only OWNER can add staff.
+|
+*/
+
 exports.addStaff = async (req, res) => {
   try {
     // ============================================================
@@ -11,29 +1113,9 @@ exports.addStaff = async (req, res) => {
       });
     }
 
-    const staffName = String(
-      req.body.staff_name || ""
-    ).trim();
-
-    const normalizedPhone = normalizePhone(
-      req.body.phone
-    );
-
-    const shopId = Number(
-      req.user.shop_id
-    );
-
-    // ============================================================
-    // DEBUG
-    // ============================================================
-
-    console.log("ADD STAFF DEBUG:", {
-      userId: req.user.user_id,
-      shopId: shopId,
-      phoneFromRequest: req.body.phone,
-      normalizedPhone: normalizedPhone,
-      role: req.user.role,
-    });
+    const staffName = String(req.body.staff_name || "").trim();
+    const normalizedPhone = normalizePhone(req.body.phone);
+    const shopId = Number(req.user.shop_id);
 
     // ============================================================
     // VALIDATION
@@ -61,7 +1143,11 @@ exports.addStaff = async (req, res) => {
     }
 
     // ============================================================
-    // CHECK SAME SHOP + SAME PHONE
+    // CHECK DUPLICATE STAFF
+    // ============================================================
+    // IMPORTANT:
+    // Check the SAME SHOP + SAME PHONE.
+    // No LIMIT 1 here.
     // ============================================================
 
     const [existingStaff] = await db.query(
@@ -78,32 +1164,18 @@ exports.addStaff = async (req, res) => {
         AND phone = ?
         AND role = 'staff'
       `,
-      [
-        shopId,
-        normalizedPhone,
-      ]
-    );
-
-    console.log(
-      "EXISTING STAFF DEBUG:",
-      existingStaff
+      [shopId, normalizedPhone]
     );
 
     if (existingStaff.length > 0) {
-      console.log(
-        "DUPLICATE STAFF BLOCKED:",
-        normalizedPhone
-      );
-
       return res.status(409).json({
         success: false,
-        message:
-          "This staff member is already added to this shop",
+        message: "This staff member is already added to this shop",
       });
     }
 
     // ============================================================
-    // CHECK PHONE USED BY ANY ACCOUNT
+    // CHECK PHONE ALREADY USED BY ANY ACCOUNT
     // ============================================================
 
     const [existingAccount] = await db.query(
@@ -121,14 +1193,8 @@ exports.addStaff = async (req, res) => {
       [normalizedPhone]
     );
 
-    console.log(
-      "EXISTING ACCOUNT DEBUG:",
-      existingAccount
-    );
-
     if (existingAccount.length > 0) {
-      const account =
-        existingAccount[0];
+      const account = existingAccount[0];
 
       if (account.role === "owner") {
         return res.status(409).json({
@@ -157,32 +1223,28 @@ exports.addStaff = async (req, res) => {
     // USERNAME
     // ============================================================
 
-    const staffUsername =
-      normalizedPhone;
+    const staffUsername = normalizedPhone;
 
     // ============================================================
     // RANDOM PASSWORD
     // ============================================================
 
-    const randomPassword =
-      generateRandomPassword();
+    const randomPassword = generateRandomPassword();
 
-    const hashedPassword =
-      await bcrypt.hash(
-        randomPassword,
-        10
-      );
+    const hashedPassword = await bcrypt.hash(
+      randomPassword,
+      10
+    );
 
     // ============================================================
-    // TIDB SEQUENCE
+    // GET STAFF ID FROM TIDB SEQUENCE
     // ============================================================
 
-    const [staffSequence] =
-      await db.query(
-        `
-        SELECT NEXT VALUE FOR users_id_seq AS user_id
-        `
-      );
+    const [staffSequence] = await db.query(
+      `
+      SELECT NEXT VALUE FOR users_id_seq AS user_id
+      `
+    );
 
     const staffId = Number(
       staffSequence[0].user_id
@@ -205,17 +1267,7 @@ exports.addStaff = async (req, res) => {
         status,
         phone
       )
-      VALUES
-      (
-        ?,
-        ?,
-        ?,
-        ?,
-        ?,
-        'staff',
-        'inactive',
-        ?
-      )
+      VALUES (?, ?, ?, ?, ?, 'staff', 'inactive', ?)
       `,
       [
         staffId,
@@ -228,23 +1280,19 @@ exports.addStaff = async (req, res) => {
     );
 
     // ============================================================
-    // CREATE OTP
+    // CREATE STAFF INVITATION OTP
     // ============================================================
 
-    const otp =
-      generateOtp();
+    const otp = generateOtp();
 
-    const otpHash =
-      await bcrypt.hash(
-        otp,
-        10
-      );
+    const otpHash = await bcrypt.hash(
+      otp,
+      10
+    );
 
-    const expiresAt =
-      new Date(
-        Date.now() +
-          5 * 60 * 1000
-      );
+    const expiresAt = new Date(
+      Date.now() + 5 * 60 * 1000
+    );
 
     await db.query(
       `
@@ -264,13 +1312,7 @@ exports.addStaff = async (req, res) => {
         purpose,
         expires_at
       )
-      VALUES
-      (
-        ?,
-        ?,
-        'staff_invite',
-        ?
-      )
+      VALUES (?, ?, 'staff_invite', ?)
       `,
       [
         normalizedPhone,
@@ -294,16 +1336,11 @@ exports.addStaff = async (req, res) => {
       staff_id: staffId,
     };
 
-    if (
-      process.env.NODE_ENV !==
-      "production"
-    ) {
+    if (process.env.NODE_ENV !== "production") {
       response.devOtp = otp;
     }
 
-    return res.status(201).json(
-      response
-    );
+    return res.status(201).json(response);
 
   } catch (error) {
     console.error(
@@ -314,6 +1351,242 @@ exports.addStaff = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to add staff",
+      error: error.message,
+    });
+  }
+};
+/*
+|--------------------------------------------------------------------------
+| VERIFY STAFF INVITATION
+|--------------------------------------------------------------------------
+*/
+
+exports.verifyStaff = async (
+  req,
+  res
+) => {
+  try {
+    const {
+      phone,
+      otp,
+    } = req.body;
+
+    const normalizedPhone =
+      normalizePhone(phone);
+
+    if (
+      !normalizedPhone ||
+      !otp
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Phone number and OTP are required",
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | FIND OTP
+    |--------------------------------------------------------------------------
+    */
+
+    const [rows] =
+      await db.query(
+        `
+        SELECT *
+        FROM otp_verifications
+        WHERE phone = ?
+        AND purpose = 'staff_invite'
+        AND verified_at IS NULL
+        ORDER BY id DESC
+        LIMIT 1
+        `,
+        [normalizedPhone]
+      );
+
+    const otpRecord =
+      rows[0];
+
+    if (!otpRecord) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "OTP not found or already used",
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | EXPIRY
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+      new Date(
+        otpRecord.expires_at
+      ) < new Date()
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "OTP expired. Please ask owner to send a new invitation",
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | ATTEMPTS
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+      otpRecord.attempts >= 5
+    ) {
+      return res.status(429).json({
+        success: false,
+        message:
+          "Too many attempts. Request a new OTP",
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | VERIFY OTP
+    |--------------------------------------------------------------------------
+    */
+
+    const valid =
+      await bcrypt.compare(
+        String(otp),
+        otpRecord.otp_hash
+      );
+
+    if (!valid) {
+      await db.query(
+        `
+        UPDATE otp_verifications
+        SET attempts = attempts + 1
+        WHERE id = ?
+        `,
+        [otpRecord.id]
+      );
+
+      return res.status(400).json({
+        success: false,
+        message: "Invalid OTP",
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | MARK OTP VERIFIED
+    |--------------------------------------------------------------------------
+    */
+
+    await db.query(
+      `
+      UPDATE otp_verifications
+      SET verified_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+      `,
+      [otpRecord.id]
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | FIND STAFF
+    |--------------------------------------------------------------------------
+    */
+
+    const [users] =
+      await db.query(
+        `
+        SELECT
+          id,
+          shop_id,
+          username,
+          phone,
+          role,
+          status
+        FROM users
+        WHERE phone = ?
+        AND role = 'staff'
+        LIMIT 1
+        `,
+        [normalizedPhone]
+      );
+
+    const staff =
+      users[0];
+
+    if (!staff) {
+      return res.status(404).json({
+        success: false,
+        message:
+          "Staff account not found",
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | ACTIVATE STAFF
+    |--------------------------------------------------------------------------
+    */
+
+    await db.query(
+      `
+      UPDATE users
+      SET status = 'active'
+      WHERE id = ?
+      `,
+      [staff.id]
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | CREATE STAFF TOKEN
+    |--------------------------------------------------------------------------
+    */
+
+    const token =
+      createToken({
+        id: staff.id,
+        shop_id: staff.shop_id,
+        role: "staff",
+      });
+
+    /*
+    |--------------------------------------------------------------------------
+    | RESPONSE
+    |--------------------------------------------------------------------------
+    */
+
+    return res.json({
+      success: true,
+      message:
+        "Staff verified successfully",
+
+      token,
+
+      user: {
+        id: staff.id,
+        shop_id: staff.shop_id,
+        username: staff.username,
+        phone: staff.phone,
+        role: "staff",
+      },
+    });
+  } catch (error) {
+    console.error(
+      "VERIFY STAFF ERROR:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Staff verification failed",
       error: error.message,
     });
   }
