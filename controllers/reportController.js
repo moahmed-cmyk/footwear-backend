@@ -4,14 +4,9 @@ const db = require("../config/db");
 // REPORTS
 // ======================================================
 
-// ======================================================
-// REPORTS
-// ======================================================
-
 exports.getReports = async (req, res) => {
   try {
     const shop_id = req.user.shop_id;
- 
 
     const {
       filter = "today",
@@ -42,13 +37,19 @@ exports.getReports = async (req, res) => {
     else if (filter === "week") {
       billDateWhere = `
         AND DATE(b.created_at)
-        BETWEEN DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)
+        BETWEEN DATE_SUB(
+          CURDATE(),
+          INTERVAL WEEKDAY(CURDATE()) DAY
+        )
         AND CURDATE()
       `;
 
       expenseDateWhere = `
         AND DATE(expense_date)
-        BETWEEN DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)
+        BETWEEN DATE_SUB(
+          CURDATE(),
+          INTERVAL WEEKDAY(CURDATE()) DAY
+        )
         AND CURDATE()
       `;
     }
@@ -110,10 +111,7 @@ exports.getReports = async (req, res) => {
             INNER JOIN bills bb
               ON bb.id = bi.bill_id
             WHERE bb.shop_id = ?
-            ${billDateWhere.replace(
-              /b\./g,
-              "bb."
-            )}
+            ${billDateWhere.replace(/b\./g, "bb.")}
           ),
           0
         ) AS total_items,
@@ -239,7 +237,10 @@ exports.getReports = async (req, res) => {
     else if (filter === "week") {
       staffDateWhere = `
         AND DATE(b.created_at)
-        BETWEEN DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)
+        BETWEEN DATE_SUB(
+          CURDATE(),
+          INTERVAL WEEKDAY(CURDATE()) DAY
+        )
         AND CURDATE()
       `;
     }
@@ -258,29 +259,59 @@ exports.getReports = async (req, res) => {
 
       staffParams.push(startDate, endDate);
     }
-const [staffRows] = await db.query(
-  `
-  SELECT
-      u.id AS staff_id,
-      u.username AS staff_name,
-      COUNT(DISTINCT b.id) AS total_bills,
-      COALESCE(SUM(b.total), 0) AS total_sales,
-      COALESCE(SUM(b.discount), 0) AS total_discount,
-      COALESCE(SUM(bi.profit), 0) AS total_profit
-  FROM users u
-  INNER JOIN bills b
-      ON b.created_by = u.id
-      AND b.shop_id = ?
-      AND DATE(b.created_at) BETWEEN ? AND ?
-  LEFT JOIN bill_items bi
-      ON bi.bill_id = b.id
-  WHERE u.shop_id = ?
-    AND LOWER(u.role) = 'staff'
-  GROUP BY u.id, u.username
-  ORDER BY total_sales DESC
-  `,
- [shop_id, startDate, endDate, shop_id]
-);
+
+    const [staffRows] = await db.query(
+      `
+      SELECT
+          u.id AS staff_id,
+          u.username AS staff_name,
+
+          COUNT(DISTINCT b.id) AS total_bills,
+
+          COALESCE(
+            SUM(b.total),
+            0
+          ) AS total_sales,
+
+          COALESCE(
+            SUM(b.discount),
+            0
+          ) AS total_discount,
+
+          COALESCE(
+            SUM(bi.profit),
+            0
+          ) AS total_profit
+
+      FROM users u
+
+      INNER JOIN bills b
+          ON b.created_by = u.id
+          AND b.shop_id = ?
+
+      LEFT JOIN bill_items bi
+          ON bi.bill_id = b.id
+
+      WHERE u.shop_id = ?
+        AND LOWER(u.role) = 'staff'
+
+        ${staffDateWhere}
+
+      GROUP BY
+          u.id,
+          u.username
+
+      ORDER BY total_sales DESC
+      `,
+      [
+        shop_id,
+        shop_id,
+        ...(filter === "custom"
+          ? [startDate, endDate]
+          : []),
+      ]
+    );
+
     // ==================================================
     // RESPONSE
     // ==================================================
@@ -338,17 +369,25 @@ exports.staffPerformance = async (req, res) => {
       SELECT
           u.id,
           u.username,
-          COUNT(b.id) as total_bills,
-          COALESCE(SUM(b.total),0) as total_sales,
-          COALESCE(SUM(bi.profit),0) as total_profit
+          COUNT(b.id) AS total_bills,
+          COALESCE(SUM(b.total), 0) AS total_sales,
+          COALESCE(SUM(bi.profit), 0) AS total_profit
+
       FROM users u
+
       LEFT JOIN bills b
           ON b.created_by = u.id
           AND b.shop_id = ?
+
       LEFT JOIN bill_items bi
           ON bi.bill_id = b.id
+
       WHERE u.shop_id = ?
-      GROUP BY u.id, u.username
+
+      GROUP BY
+          u.id,
+          u.username
+
       ORDER BY total_sales DESC
       `,
       [shop_id, shop_id]
