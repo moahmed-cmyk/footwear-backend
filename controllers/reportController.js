@@ -257,50 +257,29 @@ exports.getReports = async (req, res) => {
 
       staffParams.push(startDate, endDate);
     }
-
-    const [staffRows] = await db.query(
-      `
-      SELECT
-        u.id AS staff_id,
-
-        u.username AS staff_name,
-
-        COUNT(DISTINCT b.id) AS total_bills,
-
-        COALESCE(SUM(b.total), 0) AS total_sales,
-
-        COALESCE(SUM(b.discount), 0) AS total_discount,
-
-        COALESCE(SUM(bi.profit), 0) AS total_profit
-
-      FROM users u
-
-      LEFT JOIN bills b
-        ON b.created_by = u.id
-        AND b.shop_id = ?
-        ${staffDateWhere}
-
-      LEFT JOIN bill_items bi
-        ON bi.bill_id = b.id
-
-      WHERE u.shop_id = ?
-        AND LOWER(u.role) = 'staff'
-
-      GROUP BY
-        u.id,
-        u.username
-
-      ORDER BY total_sales DESC
-      `,
-      [
-        shopId,
-        ...(filter === "custom"
-          ? [startDate, endDate]
-          : []),
-        shopId,
-      ]
-    );
-
+const [staffRows] = await db.query(
+  `
+  SELECT
+      u.id AS staff_id,
+      u.username AS staff_name,
+      COUNT(DISTINCT b.id) AS total_bills,
+      COALESCE(SUM(b.total), 0) AS total_sales,
+      COALESCE(SUM(b.discount), 0) AS total_discount,
+      COALESCE(SUM(bi.profit), 0) AS total_profit
+  FROM users u
+  INNER JOIN bills b
+      ON b.created_by = u.id
+      AND b.shop_id = ?
+      AND DATE(b.created_at) BETWEEN ? AND ?
+  LEFT JOIN bill_items bi
+      ON bi.bill_id = b.id
+  WHERE u.shop_id = ?
+    AND LOWER(u.role) = 'staff'
+  GROUP BY u.id, u.username
+  ORDER BY total_sales DESC
+  `,
+  [shop_id, start_date, end_date, shop_id]
+);
     // ==================================================
     // RESPONSE
     // ==================================================
