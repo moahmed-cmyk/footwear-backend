@@ -1102,11 +1102,9 @@ exports.registerShop = async (
 
 exports.addStaff = async (req, res) => {
   try {
-    /*
-    |--------------------------------------------------------------------------
-    | OWNER CHECK
-    |--------------------------------------------------------------------------
-    */
+    // ============================================================
+    // OWNER CHECK
+    // ============================================================
 
     if ((req.user.role || "").toLowerCase() !== "owner") {
       return res.status(403).json({
@@ -1115,22 +1113,15 @@ exports.addStaff = async (req, res) => {
       });
     }
 
-    const {
-      staff_name,
-      phone,
-      username,
-    } = req.body;
+    const staffName = String(req.body.staff_name || "").trim();
+    const normalizedPhone = normalizePhone(req.body.phone);
+    const shopId = Number(req.user.shop_id);
 
-    const normalizedPhone = normalizePhone(phone);
-    const shopId = req.user.shop_id;
+    // ============================================================
+    // VALIDATION
+    // ============================================================
 
-    /*
-    |--------------------------------------------------------------------------
-    | VALIDATION
-    |--------------------------------------------------------------------------
-    */
-
-    if (!staff_name || !normalizedPhone) {
+    if (!staffName || !normalizedPhone) {
       return res.status(400).json({
         success: false,
         message: "Staff name and phone are required",
@@ -1144,82 +1135,99 @@ exports.addStaff = async (req, res) => {
       });
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | CHECK EXISTING STAFF / ACCOUNT
-    |--------------------------------------------------------------------------
-    |
-    | Same shop + same phone = duplicate staff
-    | Also prevent an existing owner/staff account from being
-    | created again because phone login is account-based.
-    |
-    */
+    if (!shopId) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid shop",
+      });
+    }
 
-    const [existingUsers] = await db.query(
+    // ============================================================
+    // CHECK DUPLICATE STAFF
+    // ============================================================
+    // IMPORTANT:
+    // Check the SAME SHOP + SAME PHONE.
+    // No LIMIT 1 here.
+    // ============================================================
+
+    const [existingStaff] = await db.query(
       `
       SELECT
         id,
         shop_id,
-        role,
-        status,
         name,
-        phone
+        phone,
+        role,
+        status
+      FROM users
+      WHERE shop_id = ?
+        AND phone = ?
+        AND role = 'staff'
+      `,
+      [shopId, normalizedPhone]
+    );
+
+    if (existingStaff.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: "This staff member is already added to this shop",
+      });
+    }
+
+    // ============================================================
+    // CHECK PHONE ALREADY USED BY ANY ACCOUNT
+    // ============================================================
+
+    const [existingAccount] = await db.query(
+      `
+      SELECT
+        id,
+        shop_id,
+        name,
+        phone,
+        role,
+        status
       FROM users
       WHERE phone = ?
-      LIMIT 1
       `,
       [normalizedPhone]
     );
 
-    if (existingUsers.length > 0) {
-      const existingUser = existingUsers[0];
+    if (existingAccount.length > 0) {
+      const account = existingAccount[0];
 
-      if (
-        Number(existingUser.shop_id) === Number(shopId) &&
-        existingUser.role === "staff"
-      ) {
+      if (account.role === "owner") {
         return res.status(409).json({
           success: false,
-          message: "This staff member is already added to this shop",
+          message:
+            "This mobile number is already linked to an owner account",
         });
       }
 
-      if (existingUser.role === "staff") {
+      if (account.role === "staff") {
         return res.status(409).json({
           success: false,
-          message: "This mobile number is already linked to a staff account",
-        });
-      }
-
-      if (existingUser.role === "owner") {
-        return res.status(409).json({
-          success: false,
-          message: "This mobile number is already linked to an owner account",
+          message:
+            "This mobile number is already linked to a staff account",
         });
       }
 
       return res.status(409).json({
         success: false,
-        message: "This mobile number is already linked to an account",
+        message:
+          "This mobile number is already linked to an account",
       });
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | USERNAME
-    |--------------------------------------------------------------------------
-    */
+    // ============================================================
+    // USERNAME
+    // ============================================================
 
-    const staffUsername =
-      username && username.trim()
-        ? username.trim()
-        : normalizedPhone;
+    const staffUsername = normalizedPhone;
 
-    /*
-    |--------------------------------------------------------------------------
-    | RANDOM PASSWORD
-    |--------------------------------------------------------------------------
-    */
+    // ============================================================
+    // RANDOM PASSWORD
+    // ============================================================
 
     const randomPassword = generateRandomPassword();
 
@@ -1228,11 +1236,9 @@ exports.addStaff = async (req, res) => {
       10
     );
 
-    /*
-    |--------------------------------------------------------------------------
-    | GET STAFF ID FROM TIDB SEQUENCE
-    |--------------------------------------------------------------------------
-    */
+    // ============================================================
+    // GET STAFF ID FROM TIDB SEQUENCE
+    // ============================================================
 
     const [staffSequence] = await db.query(
       `
@@ -1244,15 +1250,9 @@ exports.addStaff = async (req, res) => {
       staffSequence[0].user_id
     );
 
-    /*
-    |--------------------------------------------------------------------------
-    | CREATE STAFF
-    |--------------------------------------------------------------------------
-    |
-    | Save staff name into users.name
-    | Staff stays inactive until OTP verification.
-    |
-    */
+    // ============================================================
+    // CREATE STAFF
+    // ============================================================
 
     await db.query(
       `
@@ -1273,17 +1273,15 @@ exports.addStaff = async (req, res) => {
         staffId,
         shopId,
         staffUsername,
-        staff_name.trim(),
+        staffName,
         hashedPassword,
         normalizedPhone,
       ]
     );
 
-    /*
-    |--------------------------------------------------------------------------
-    | CREATE STAFF INVITATION OTP
-    |--------------------------------------------------------------------------
-    */
+    // ============================================================
+    // CREATE STAFF INVITATION OTP
+    // ============================================================
 
     const otp = generateOtp();
 
@@ -1300,7 +1298,7 @@ exports.addStaff = async (req, res) => {
       `
       DELETE FROM otp_verifications
       WHERE phone = ?
-      AND purpose = 'staff_invite'
+        AND purpose = 'staff_invite'
       `,
       [normalizedPhone]
     );
@@ -1323,11 +1321,9 @@ exports.addStaff = async (req, res) => {
       ]
     );
 
-    /*
-    |--------------------------------------------------------------------------
-    | DEVELOPMENT OTP
-    |--------------------------------------------------------------------------
-    */
+    // ============================================================
+    // DEVELOPMENT OTP
+    // ============================================================
 
     console.log(
       `NIFORA STAFF INVITE OTP | ${normalizedPhone} | ${otp}`
@@ -1345,6 +1341,7 @@ exports.addStaff = async (req, res) => {
     }
 
     return res.status(201).json(response);
+
   } catch (error) {
     console.error(
       "ADD STAFF ERROR:",
@@ -1358,7 +1355,6 @@ exports.addStaff = async (req, res) => {
     });
   }
 };
-
 /*
 |--------------------------------------------------------------------------
 | VERIFY STAFF INVITATION
