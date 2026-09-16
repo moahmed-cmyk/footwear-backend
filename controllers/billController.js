@@ -116,44 +116,30 @@ exports.createBill = async (req, res) => {
     // TiDB sequence is NOT used here.
     // ----------------------------------------------------------
 
-    const [shopRows] = await connection.query(
-      `SELECT id
-       FROM shops
-       WHERE id = ?
-       FOR UPDATE`,
-      [shop_id]
-    );
+// ----------------------------------------------------------
+// GENERATE BILL ID
+// ----------------------------------------------------------
+// bills.id is the PRIMARY KEY.
+// Use TiDB sequence so every bill gets a unique ID.
+// DO NOT use MAX(id) + 1.
+// ----------------------------------------------------------
 
-    if (shopRows.length === 0) {
-      await connection.rollback();
+const [sequenceRows] = await connection.query(
+  `SELECT NEXTVAL(bills_id_seq) AS id`
+);
 
-      return res.status(404).json({
-        success: false,
-        message: "Shop not found",
-      });
-    }
+const billId = Number(
+  sequenceRows[0]?.id || 0
+);
 
-    const [maxBillRows] = await connection.query(
-      `SELECT COALESCE(MAX(id), 0) AS max_bill_id
-       FROM bills
-       WHERE shop_id = ?`,
-      [shop_id]
-    );
+if (!billId || billId <= 0) {
+  await connection.rollback();
 
-    const maxBillId = Number(
-      maxBillRows[0].max_bill_id || 0
-    );
-
-    const billId = maxBillId + 1;
-
-    if (!billId || billId <= 0) {
-      await connection.rollback();
-
-      return res.status(500).json({
-        success: false,
-        message: "Failed to generate bill ID",
-      });
-    }
+  return res.status(500).json({
+    success: false,
+    message: "Failed to generate bill ID",
+  });
+}
 
     // ----------------------------------------------------------
     // INSERT BILL
