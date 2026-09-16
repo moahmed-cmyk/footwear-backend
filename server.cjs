@@ -595,6 +595,9 @@ app.get(
 // ======================================================
 // STAFF LIST
 // ======================================================
+// ======================================================
+// STAFF LIST
+// ======================================================
 
 app.get(
   "/staff",
@@ -606,10 +609,19 @@ app.get(
       const shopId = req.user.shop_id;
 
       const [staff] = await db.query(
-        `SELECT id, username, role, status
-         FROM users
-         WHERE shop_id = ? AND role = 'staff'
-         ORDER BY id DESC`,
+        `
+        SELECT
+          id,
+          name,
+          phone,
+          username,
+          role,
+          status
+        FROM users
+        WHERE shop_id = ?
+          AND role = 'staff'
+        ORDER BY id DESC
+        `,
         [shopId]
       );
 

@@ -1100,10 +1100,7 @@ exports.registerShop = async (
 |
 */
 
-exports.addStaff = async (
-  req,
-  res
-) => {
+exports.addStaff = async (req, res) => {
   try {
     /*
     |--------------------------------------------------------------------------
@@ -1111,14 +1108,10 @@ exports.addStaff = async (
     |--------------------------------------------------------------------------
     */
 
-    if (
-      (req.user.role || "").toLowerCase() !==
-      "owner"
-    ) {
+    if ((req.user.role || "").toLowerCase() !== "owner") {
       return res.status(403).json({
         success: false,
-        message:
-          "Only shop owner can add staff",
+        message: "Only shop owner can add staff",
       });
     }
 
@@ -1128,58 +1121,86 @@ exports.addStaff = async (
       username,
     } = req.body;
 
-    const normalizedPhone =
-      normalizePhone(phone);
+    const normalizedPhone = normalizePhone(phone);
+    const shopId = req.user.shop_id;
 
-    if (
-      !staff_name ||
-      !normalizedPhone
-    ) {
+    /*
+    |--------------------------------------------------------------------------
+    | VALIDATION
+    |--------------------------------------------------------------------------
+    */
+
+    if (!staff_name || !normalizedPhone) {
       return res.status(400).json({
         success: false,
-        message:
-          "Staff name and phone are required",
+        message: "Staff name and phone are required",
       });
     }
 
-    if (
-      !/^[6-9]\d{9}$/.test(
-        normalizedPhone
-      )
-    ) {
+    if (!/^[6-9]\d{9}$/.test(normalizedPhone)) {
       return res.status(400).json({
         success: false,
-        message:
-          "Enter a valid Indian mobile number",
+        message: "Enter a valid Indian mobile number",
       });
     }
 
     /*
     |--------------------------------------------------------------------------
-    | CHECK PHONE
+    | CHECK EXISTING STAFF / ACCOUNT
     |--------------------------------------------------------------------------
+    |
+    | Same shop + same phone = duplicate staff
+    | Also prevent an existing owner/staff account from being
+    | created again because phone login is account-based.
+    |
     */
 
-    const [existingUsers] =
-      await db.query(
-        `
-        SELECT
-          id,
-          shop_id,
-          role,
-          status
-        FROM users
-        WHERE phone = ?
-        LIMIT 1
-        `,
-        [normalizedPhone]
-      );
+    const [existingUsers] = await db.query(
+      `
+      SELECT
+        id,
+        shop_id,
+        role,
+        status,
+        name,
+        phone
+      FROM users
+      WHERE phone = ?
+      LIMIT 1
+      `,
+      [normalizedPhone]
+    );
 
-    if (existingUsers.length) {
+    if (existingUsers.length > 0) {
+      const existingUser = existingUsers[0];
+
+      if (
+        Number(existingUser.shop_id) === Number(shopId) &&
+        existingUser.role === "staff"
+      ) {
+        return res.status(409).json({
+          success: false,
+          message: "This staff member is already added to this shop",
+        });
+      }
+
+      if (existingUser.role === "staff") {
+        return res.status(409).json({
+          success: false,
+          message: "This mobile number is already linked to a staff account",
+        });
+      }
+
+      if (existingUser.role === "owner") {
+        return res.status(409).json({
+          success: false,
+          message: "This mobile number is already linked to an owner account",
+        });
+      }
+
       return res.status(409).json({
         success: false,
-        message:
-          "This mobile number is already linked to an account",
+        message: "This mobile number is already linked to an account",
       });
     }
 
@@ -1190,8 +1211,7 @@ exports.addStaff = async (
     */
 
     const staffUsername =
-      username &&
-      username.trim()
+      username && username.trim()
         ? username.trim()
         : normalizedPhone;
 
@@ -1201,14 +1221,12 @@ exports.addStaff = async (
     |--------------------------------------------------------------------------
     */
 
-    const randomPassword =
-      generateRandomPassword();
+    const randomPassword = generateRandomPassword();
 
-    const hashedPassword =
-      await bcrypt.hash(
-        randomPassword,
-        10
-      );
+    const hashedPassword = await bcrypt.hash(
+      randomPassword,
+      10
+    );
 
     /*
     |--------------------------------------------------------------------------
@@ -1216,24 +1234,23 @@ exports.addStaff = async (
     |--------------------------------------------------------------------------
     */
 
-    const [staffSequence] =
-      await db.query(
-        `
-        SELECT NEXT VALUE FOR users_id_seq AS user_id
-        `
-      );
+    const [staffSequence] = await db.query(
+      `
+      SELECT NEXT VALUE FOR users_id_seq AS user_id
+      `
+    );
 
-    const staffId =
-      Number(
-        staffSequence[0].user_id
-      );
+    const staffId = Number(
+      staffSequence[0].user_id
+    );
 
     /*
     |--------------------------------------------------------------------------
     | CREATE STAFF
     |--------------------------------------------------------------------------
     |
-    | Inactive until staff verifies OTP.
+    | Save staff name into users.name
+    | Staff stays inactive until OTP verification.
     |
     */
 
@@ -1244,17 +1261,19 @@ exports.addStaff = async (
         id,
         shop_id,
         username,
+        name,
         password,
         role,
         status,
         phone
       )
-      VALUES (?, ?, ?, ?, 'staff', 'inactive', ?)
+      VALUES (?, ?, ?, ?, ?, 'staff', 'inactive', ?)
       `,
       [
         staffId,
-        req.user.shop_id,
+        shopId,
         staffUsername,
+        staff_name.trim(),
         hashedPassword,
         normalizedPhone,
       ]
@@ -1266,20 +1285,16 @@ exports.addStaff = async (
     |--------------------------------------------------------------------------
     */
 
-    const otp =
-      generateOtp();
+    const otp = generateOtp();
 
-    const otpHash =
-      await bcrypt.hash(
-        otp,
-        10
-      );
+    const otpHash = await bcrypt.hash(
+      otp,
+      10
+    );
 
-    const expiresAt =
-      new Date(
-        Date.now() +
-          5 * 60 * 1000
-      );
+    const expiresAt = new Date(
+      Date.now() + 5 * 60 * 1000
+    );
 
     await db.query(
       `
@@ -1325,16 +1340,11 @@ exports.addStaff = async (
       staff_id: staffId,
     };
 
-    if (
-      process.env.NODE_ENV !==
-      "production"
-    ) {
+    if (process.env.NODE_ENV !== "production") {
       response.devOtp = otp;
     }
 
-    return res.status(201).json(
-      response
-    );
+    return res.status(201).json(response);
   } catch (error) {
     console.error(
       "ADD STAFF ERROR:",
@@ -1343,8 +1353,7 @@ exports.addStaff = async (
 
     return res.status(500).json({
       success: false,
-      message:
-        "Failed to add staff",
+      message: "Failed to add staff",
       error: error.message,
     });
   }
