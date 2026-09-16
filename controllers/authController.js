@@ -1590,4 +1590,108 @@ exports.verifyStaff = async (
       error: error.message,
     });
   }
+
+  // ============================================================
+// CHANGE STAFF NAME
+// ============================================================
+
+exports.changeStaffName = async (req, res) => {
+  try {
+    const db = require("../config/db");
+
+    // Logged-in user information comes from JWT
+    const ownerShopId = req.user.shop_id;
+    const ownerRole = req.user.role;
+
+    // Only owner can change staff name
+    if (ownerRole !== "owner") {
+      return res.status(403).json({
+        success: false,
+        message: "Only owner can change staff name",
+      });
+    }
+
+    const staffId = Number(req.params.id);
+    const name = String(req.body.name || "").trim();
+
+    // Validate staff ID
+    if (!Number.isInteger(staffId) || staffId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid staff ID",
+      });
+    }
+
+    // Validate name
+    if (!name) {
+      return res.status(400).json({
+        success: false,
+        message: "Staff name is required",
+      });
+    }
+
+    if (name.length > 100) {
+      return res.status(400).json({
+        success: false,
+        message: "Staff name is too long",
+      });
+    }
+
+    // ----------------------------------------------------------
+    // IMPORTANT:
+    // Check staff belongs to the logged-in owner's shop
+    // ----------------------------------------------------------
+
+    const [staffRows] = await db.query(
+      `
+      SELECT id
+      FROM users
+      WHERE id = ?
+      AND shop_id = ?
+      AND role = 'staff'
+      LIMIT 1
+      `,
+      [staffId, ownerShopId]
+    );
+
+    if (staffRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Staff not found",
+      });
+    }
+
+    // ----------------------------------------------------------
+    // Update ONLY staff name
+    // ----------------------------------------------------------
+
+    await db.query(
+      `
+      UPDATE users
+      SET name = ?
+      WHERE id = ?
+      AND shop_id = ?
+      AND role = 'staff'
+      `,
+      [name, staffId, ownerShopId]
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Staff name updated successfully",
+      name: name,
+    });
+  } catch (error) {
+    console.error(
+      "CHANGE STAFF NAME ERROR:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to change staff name",
+      error: error.message,
+    });
+  }
+};
 };

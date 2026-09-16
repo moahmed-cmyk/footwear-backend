@@ -210,6 +210,15 @@ router.post(
   requirePermission("staff_management"),
   authController.addStaff
 );
+
+// Owner changes staff name
+router.put(
+  "/staff/:id/name",
+  verifyToken,
+  checkSubscription,
+  requirePermission("staff_management"),
+  authController.changeStaffName
+);
 // Staff verifies invitation OTP
 router.post(
   "/verify-staff",
