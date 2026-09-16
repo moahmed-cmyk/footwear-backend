@@ -10,8 +10,8 @@ const db = require("../config/db");
 
 exports.getReports = async (req, res) => {
   try {
-     const shopId = req.user.shop_id;
-    const shop_id = shopId;
+    const shop_id = req.user.shop_id;
+ 
 
     const {
       filter = "today",
@@ -26,8 +26,8 @@ exports.getReports = async (req, res) => {
     let billDateWhere = "";
     let expenseDateWhere = "";
 
-    const billParams = [shopId];
-    const expenseParams = [shopId];
+    const billParams = [shop_id];
+    const expenseParams = [shop_id];
 
     if (filter === "today") {
       billDateWhere = `
@@ -140,7 +140,7 @@ exports.getReports = async (req, res) => {
       ${billDateWhere}
       `,
       [
-        shopId,
+        shop_id,
         ...billParams,
       ]
     );
@@ -228,7 +228,7 @@ exports.getReports = async (req, res) => {
     // ==================================================
 
     let staffDateWhere = "";
-    const staffParams = [shopId];
+    const staffParams = [shop_id];
 
     if (filter === "today") {
       staffDateWhere = `
