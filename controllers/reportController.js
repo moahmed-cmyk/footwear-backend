@@ -10,7 +10,8 @@ const db = require("../config/db");
 
 exports.getReports = async (req, res) => {
   try {
-   const shop_id = req.user.shop_id;
+     const shopId = req.user.shop_id;
+    const shop_id = shopId;
 
     const {
       filter = "today",
