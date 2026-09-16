@@ -279,7 +279,7 @@ const [staffRows] = await db.query(
   GROUP BY u.id, u.username
   ORDER BY total_sales DESC
   `,
-  [shop_id, start_date, end_date, shop_id]
+ [shop_id, startDate, endDate, shop_id]
 );
     // ==================================================
     // RESPONSE
