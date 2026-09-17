@@ -27,7 +27,6 @@ router.post(
   requirePermission("products"),
   addProduct
 );
-
 async function requireProductsRead(req, res, next) {
   try {
     if (!req.user) {
@@ -44,37 +43,16 @@ async function requireProductsRead(req, res, next) {
       return next();
     }
 
-    // Only staff
-    if (role !== "staff") {
-      return res.status(403).json({
-        success: false,
-        message: "Access denied",
-      });
+    // Staff → Create Bill can always read products
+    // Product management itself is still protected separately
+    if (role === "staff") {
+      return next();
     }
 
-    const userId = req.user.user_id;
-    const shopId = req.user.shop_id;
-
-    const [rows] = await db.query(
-      `
-      SELECT permission
-      FROM staff_permissions
-      WHERE staff_id = ?
-        AND shop_id = ?
-        AND permission IN ('products', 'create_bill')
-        AND enabled = 1
-      `,
-      [userId, shopId]
-    );
-
-    if (rows.length === 0) {
-      return res.status(403).json({
-        success: false,
-        message: "Permission denied: create_bill or products",
-      });
-    }
-
-    next();
+    return res.status(403).json({
+      success: false,
+      message: "Access denied",
+    });
   } catch (error) {
     console.error("PRODUCT READ PERMISSION ERROR:", error);
 
@@ -84,7 +62,6 @@ async function requireProductsRead(req, res, next) {
     });
   }
 }
-
 // Get Products
 router.get(
   "/products",
