@@ -1,11 +1,24 @@
 const db = require("../config/db");
 const XLSX = require("xlsx");
 
-// ===============================
+// ============================================================
+// NORMALIZE PRODUCT NAME
+// ============================================================
+function normalizeName(value) {
+  return (value || "")
+    .toString()
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "");
+}
+
+// ============================================================
 // ADD PRODUCT
-// ===============================
+// ============================================================
 exports.addProduct = async (req, res) => {
   try {
+    // IMPORTANT:
+    // Product must always belong to logged-in user's shop.
     const shop_id = req.user.shop_id;
 
     const {
@@ -17,6 +30,9 @@ exports.addProduct = async (req, res) => {
       stock,
     } = req.body;
 
+    // ----------------------------------------------------------
+    // VALIDATION
+    // ----------------------------------------------------------
     if (!name || name.trim() === "") {
       return res.status(400).json({
         success: false,
@@ -28,70 +44,93 @@ exports.addProduct = async (req, res) => {
     const cleanSize = (size || "").trim();
     const cleanBarcode = (barcode || "").trim();
 
+    const productMrp = Number(mrp || 0);
+    const productBuyingPrice = Number(buying_price || 0);
     const newStock = Number(stock || 0);
 
-    const normalizedName = cleanName
-      .toLowerCase()
-      .replace(/\s+/g, "");
+    if (Number.isNaN(productMrp)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid MRP",
+      });
+    }
 
-    const normalizedSize = cleanSize
-      .toLowerCase()
-      .replace(/\s+/g, "");
+    if (Number.isNaN(productBuyingPrice)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid buying price",
+      });
+    }
 
+    if (Number.isNaN(newStock)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid stock",
+      });
+    }
+
+    const normalizedName = normalizeName(cleanName);
+
+    // ----------------------------------------------------------
+    // DUPLICATE CHECK
+    //
+    // RULE:
+    // Same Product Name + Same MRP
+    // = DUPLICATE
+    //
+    // Same Product Name + Different MRP
+    // = ALLOWED
+    //
+    // NOTE:
+    // Size is intentionally NOT part of duplicate checking.
+    // ----------------------------------------------------------
     const [existing] = await db.query(
-      `SELECT id, stock
+      `SELECT id, name, size, mrp, stock
        FROM products
        WHERE shop_id = ?
        AND REPLACE(LOWER(name), ' ', '') = ?
-       AND REPLACE(LOWER(size), ' ', '') = ?
-       AND CAST(mrp AS DECIMAL(10,2)) = CAST(? AS DECIMAL(10,2))
+       AND CAST(mrp AS DECIMAL(10,2)) =
+           CAST(? AS DECIMAL(10,2))
        LIMIT 1`,
       [
         shop_id,
         normalizedName,
-        normalizedSize,
-        Number(mrp || 0),
+        productMrp,
       ]
     );
 
     if (existing.length > 0) {
-      const productId = existing[0].id;
-
-      await db.query(
-        `UPDATE products
-         SET stock = stock + ?,
-             mrp = ?,
-             buying_price = ?
-         WHERE id = ? AND shop_id = ?`,
-        [
-          newStock,
-          mrp || 0,
-          buying_price || 0,
-          productId,
-          shop_id,
-        ]
-      );
-
-      return res.json({
-        success: true,
+      return res.status(409).json({
+        success: false,
         message:
-          "Product already exists. Stock updated successfully",
-        product_id: productId,
-        updated: true,
+          "Product already exists with the same name and MRP",
+        product_id: existing[0].id,
+        duplicate: true,
       });
     }
 
+    // ----------------------------------------------------------
+    // INSERT NEW PRODUCT
+    // ----------------------------------------------------------
     const [result] = await db.query(
       `INSERT INTO products
-       (shop_id, barcode, name, size, mrp, buying_price, stock)
+       (
+         shop_id,
+         barcode,
+         name,
+         size,
+         mrp,
+         buying_price,
+         stock
+       )
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
         shop_id,
         cleanBarcode,
         cleanName,
         cleanSize,
-        mrp || 0,
-        buying_price || 0,
+        productMrp,
+        productBuyingPrice,
         newStock,
       ]
     );
@@ -112,11 +151,13 @@ exports.addProduct = async (req, res) => {
   }
 };
 
-// ===============================
+// ============================================================
 // GET PRODUCTS
-// ===============================
+// ============================================================
 exports.getProducts = async (req, res) => {
   try {
+    // IMPORTANT:
+    // Only products belonging to logged-in user's shop.
     const shop_id = req.user.shop_id;
 
     const [products] = await db.query(
@@ -142,11 +183,13 @@ exports.getProducts = async (req, res) => {
   }
 };
 
-// ===============================
+// ============================================================
 // UPDATE PRODUCT
-// ===============================
+// ============================================================
 exports.updateProduct = async (req, res) => {
   try {
+    // IMPORTANT:
+    // Product can only be updated inside user's own shop.
     const shop_id = req.user.shop_id;
     const productId = req.params.id;
 
@@ -158,11 +201,49 @@ exports.updateProduct = async (req, res) => {
       buying_price,
     } = req.body;
 
+    // ----------------------------------------------------------
+    // BASIC VALIDATION
+    // ----------------------------------------------------------
+    if (!name || name.trim() === "") {
+      return res.status(400).json({
+        success: false,
+        message: "Product name is required",
+      });
+    }
+
+    const cleanName = name.trim();
+    const cleanSize = (size || "").trim();
+    const cleanBarcode = (barcode || "").trim();
+
+    const productMrp = Number(mrp || 0);
+    const productBuyingPrice = Number(buying_price || 0);
+
+    if (Number.isNaN(productMrp)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid MRP",
+      });
+    }
+
+    if (Number.isNaN(productBuyingPrice)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid buying price",
+      });
+    }
+
+    // ----------------------------------------------------------
+    // CHECK CURRENT PRODUCT
+    // ----------------------------------------------------------
     const [check] = await db.query(
       `SELECT *
        FROM products
-       WHERE id = ? AND shop_id = ?`,
-      [productId, shop_id]
+       WHERE id = ?
+       AND shop_id = ?`,
+      [
+        productId,
+        shop_id,
+      ]
     );
 
     if (check.length === 0) {
@@ -172,20 +253,63 @@ exports.updateProduct = async (req, res) => {
       });
     }
 
+    // ----------------------------------------------------------
+    // DUPLICATE CHECK DURING UPDATE
+    //
+    // Same Product Name + Same MRP
+    // cannot belong to another product.
+    //
+    // IMPORTANT:
+    // Exclude current product ID.
+    // ----------------------------------------------------------
+    const normalizedName = normalizeName(cleanName);
+
+    const [duplicate] = await db.query(
+      `SELECT id
+       FROM products
+       WHERE shop_id = ?
+       AND id <> ?
+       AND REPLACE(LOWER(name), ' ', '') = ?
+       AND CAST(mrp AS DECIMAL(10,2)) =
+           CAST(? AS DECIMAL(10,2))
+       LIMIT 1`,
+      [
+        shop_id,
+        productId,
+        normalizedName,
+        productMrp,
+      ]
+    );
+
+    if (duplicate.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message:
+          "Another product already exists with the same name and MRP",
+        product_id: duplicate[0].id,
+        duplicate: true,
+      });
+    }
+
+    // ----------------------------------------------------------
+    // UPDATE
+    // ----------------------------------------------------------
     await db.query(
       `UPDATE products
-       SET barcode = ?,
-           name = ?,
-           size = ?,
-           mrp = ?,
-           buying_price = ?
-       WHERE id = ? AND shop_id = ?`,
+       SET
+         barcode = ?,
+         name = ?,
+         size = ?,
+         mrp = ?,
+         buying_price = ?
+       WHERE id = ?
+       AND shop_id = ?`,
       [
-        barcode || "",
-        name,
-        size || "",
-        mrp || 0,
-        buying_price || 0,
+        cleanBarcode,
+        cleanName,
+        cleanSize,
+        productMrp,
+        productBuyingPrice,
         productId,
         shop_id,
       ]
@@ -205,9 +329,9 @@ exports.updateProduct = async (req, res) => {
   }
 };
 
-// ===============================
+// ============================================================
 // IMPORT PRODUCTS
-// ===============================
+// ============================================================
 exports.importProducts = async (req, res) => {
   try {
     const shop_id = req.user.shop_id;
@@ -223,10 +347,14 @@ exports.importProducts = async (req, res) => {
       type: "buffer",
     });
 
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const sheet =
+      workbook.Sheets[workbook.SheetNames[0]];
 
     const rows = XLSX.utils.sheet_to_json(sheet);
 
+    // ----------------------------------------------------------
+    // EXCEL VALUE HELPER
+    // ----------------------------------------------------------
     function getValue(row, keys) {
       const map = {};
 
@@ -251,6 +379,9 @@ exports.importProducts = async (req, res) => {
     let skipped = 0;
     let failed = 0;
 
+    // ----------------------------------------------------------
+    // PROCESS EACH ROW
+    // ----------------------------------------------------------
     for (const row of rows) {
       try {
         const barcode = getValue(
@@ -290,43 +421,56 @@ exports.importProducts = async (req, res) => {
           getValue(row, ["stock"]) || 0
         );
 
+        // ------------------------------------------------------
+        // REQUIRED NAME
+        // ------------------------------------------------------
         if (!name) {
           skipped++;
           continue;
         }
 
-        const normalizedName = name
-          .toLowerCase()
-          .replace(/\s+/g, "");
+        const normalizedName =
+          normalizeName(name);
 
-        const normalizedSize = size
-          .toLowerCase()
-          .replace(/\s+/g, "");
-
+        // ------------------------------------------------------
+        // DUPLICATE CHECK
+        //
+        // Same Shop
+        // + Same Product Name
+        // + Same MRP
+        //
+        // => existing product
+        //
+        // Different MRP
+        // => new product
+        // ------------------------------------------------------
         const [existing] = await db.query(
           `SELECT id
            FROM products
            WHERE shop_id = ?
            AND REPLACE(LOWER(name), ' ', '') = ?
-           AND REPLACE(LOWER(size), ' ', '') = ?
            AND CAST(mrp AS DECIMAL(10,2)) =
                CAST(? AS DECIMAL(10,2))
            LIMIT 1`,
           [
             shop_id,
             normalizedName,
-            normalizedSize,
             mrp,
           ]
         );
 
         if (existing.length > 0) {
+          // ----------------------------------------------------
+          // EXISTING PRODUCT
+          // ----------------------------------------------------
           await db.query(
             `UPDATE products
-             SET stock = stock + ?,
-                 barcode = ?,
-                 buying_price = ?
-             WHERE id = ? AND shop_id = ?`,
+             SET
+               stock = stock + ?,
+               barcode = ?,
+               buying_price = ?
+             WHERE id = ?
+             AND shop_id = ?`,
             [
               stock,
               barcode,
@@ -338,10 +482,20 @@ exports.importProducts = async (req, res) => {
 
           updated++;
         } else {
+          // ----------------------------------------------------
+          // NEW PRODUCT
+          // ----------------------------------------------------
           await db.query(
             `INSERT INTO products
-             (shop_id, barcode, name, size,
-              mrp, buying_price, stock)
+             (
+               shop_id,
+               barcode,
+               name,
+               size,
+               mrp,
+               buying_price,
+               stock
+             )
              VALUES (?, ?, ?, ?, ?, ?, ?)`,
             [
               shop_id,
@@ -387,19 +541,26 @@ exports.importProducts = async (req, res) => {
   }
 };
 
-// ===============================
+// ============================================================
 // DELETE PRODUCT
-// ===============================
+// ============================================================
 exports.deleteProduct = async (req, res) => {
   try {
     const shop_id = req.user.shop_id;
     const productId = req.params.id;
 
+    // ----------------------------------------------------------
+    // CHECK PRODUCT BELONGS TO SHOP
+    // ----------------------------------------------------------
     const [check] = await db.query(
       `SELECT *
        FROM products
-       WHERE id = ? AND shop_id = ?`,
-      [productId, shop_id]
+       WHERE id = ?
+       AND shop_id = ?`,
+      [
+        productId,
+        shop_id,
+      ]
     );
 
     if (check.length === 0) {
@@ -409,10 +570,17 @@ exports.deleteProduct = async (req, res) => {
       });
     }
 
+    // ----------------------------------------------------------
+    // DELETE
+    // ----------------------------------------------------------
     await db.query(
       `DELETE FROM products
-       WHERE id = ? AND shop_id = ?`,
-      [productId, shop_id]
+       WHERE id = ?
+       AND shop_id = ?`,
+      [
+        productId,
+        shop_id,
+      ]
     );
 
     return res.json({
@@ -432,14 +600,17 @@ exports.deleteProduct = async (req, res) => {
   }
 };
 
-// ===============================
+// ============================================================
 // GET STOCK HISTORY
-// ===============================
+// ============================================================
 exports.getStockHistory = async (req, res) => {
   try {
     const shop_id = req.user.shop_id;
     const productId = req.params.id;
 
+    // ----------------------------------------------------------
+    // GET PRODUCT
+    // ----------------------------------------------------------
     const [product] = await db.query(
       `SELECT
          id,
@@ -450,8 +621,12 @@ exports.getStockHistory = async (req, res) => {
          buying_price,
          stock
        FROM products
-       WHERE id = ? AND shop_id = ?`,
-      [productId, shop_id]
+       WHERE id = ?
+       AND shop_id = ?`,
+      [
+        productId,
+        shop_id,
+      ]
     );
 
     if (product.length === 0) {
@@ -461,6 +636,9 @@ exports.getStockHistory = async (req, res) => {
       });
     }
 
+    // ----------------------------------------------------------
+    // GET HISTORY
+    // ----------------------------------------------------------
     const [history] = await db.query(
       `SELECT
          id,
@@ -475,7 +653,10 @@ exports.getStockHistory = async (req, res) => {
        WHERE product_id = ?
        AND shop_id = ?
        ORDER BY created_at DESC, id DESC`,
-      [productId, shop_id]
+      [
+        productId,
+        shop_id,
+      ]
     );
 
     return res.json({
