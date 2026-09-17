@@ -787,19 +787,21 @@ exports.getBills = async (req, res) => {
       (req.user.role || "")
         .toString()
         .toLowerCase();
-
-  let query = `
+let query = `
   SELECT
-  b.*,
-u.name AS created_by_name
-eu.name AS edited_by_name
-FROM bills b
+    b.*,
+    u.username AS created_by_name,
+    s.owner_name AS edited_by_name
+  FROM bills b
 
-LEFT JOIN users u
-  ON b.created_by = u.id
+  LEFT JOIN users u
+    ON b.created_by = u.id
 
-LEFT JOIN users eu
-  ON b.edited_by = eu.id
+  LEFT JOIN users eu
+    ON b.edited_by = eu.id
+
+  LEFT JOIN shops s
+    ON eu.shop_id = s.id
 
   WHERE b.shop_id = ?
 `;
