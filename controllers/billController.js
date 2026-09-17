@@ -789,11 +789,11 @@ exports.getBills = async (req, res) => {
         .toLowerCase();
 
     let query = `
-      SELECT
-        b.*,
-       u.name AS created_by_name,
-eu.name AS edited_by_name
-      FROM bills b
+  SELECT
+  b.*,
+  COALESCE(NULLIF(u.name, ''), u.username, u.phone) AS created_by_name,
+  COALESCE(NULLIF(eu.name, ''), eu.username, eu.phone) AS edited_by_name
+FROM bills b
 
       LEFT JOIN users u
         ON b.created_by = u.id
