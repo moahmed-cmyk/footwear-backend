@@ -791,8 +791,8 @@ exports.getBills = async (req, res) => {
   let query = `
   SELECT
   b.*,
-  u.username AS created_by_name,
-  eu.username AS edited_by_name
+u.name AS created_by_name
+eu.name AS edited_by_name
 FROM bills b
 
 LEFT JOIN users u
