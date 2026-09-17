@@ -157,6 +157,9 @@ exports.getStaffPermissions = async (req, res) => {
       }
     }
 
+    permissions["create_bill"] = true;
+permissions["bill_history"] = true;
+
     return res.json({
       success: true,
 
@@ -276,6 +279,10 @@ exports.updateStaffPermissions = async (
       finalPermissions[permission] =
         incomingPermissions[permission] === true;
     }
+
+    // Create Bill + Bill History are ALWAYS enabled
+finalPermissions["create_bill"] = true;
+finalPermissions["bill_history"] = true;
 
     /*
     |--------------------------------------------------------------------------
@@ -567,6 +574,9 @@ exports.getMyPermissions = async (
           Boolean(row.enabled);
       }
     }
+
+    permissions["create_bill"] = true;
+permissions["bill_history"] = true;
 
     /*
     |--------------------------------------------------------------------------
