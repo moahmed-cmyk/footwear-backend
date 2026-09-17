@@ -29,6 +29,12 @@ function requirePermission(permission) {
       }
 
       // Check staff permission
+      if (
+  permission === "create_bill" ||
+  permission === "bill_history"
+) {
+  return next();
+}
       const [rows] = await db.query(
         `
         SELECT enabled
