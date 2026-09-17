@@ -183,40 +183,42 @@ exports.getReports = async (req, res) => {
     // CUSTOM
     // ==================================================
 
-    else if (filter === "custom") {
-      if (!startDate || !endDate) {
-        return res.status(400).json({
-          success: false,
-          message: "startDate and endDate are required",
-        });
-      }
+ else if (filter === "custom") {
+  if (!startDate || !endDate) {
+    return res.status(400).json({
+      success: false,
+      message: "startDate and endDate are required",
+    });
+  }
 
-      billDateWhere = `
-        AND DATE(
-          DATE_ADD(
-            b.created_at,
-            INTERVAL 330 MINUTE
-          )
-        )
-        BETWEEN ? AND ?
-      `;
+  // Allow only YYYY-MM-DD
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
 
-      expenseDateWhere = `
-        AND DATE(expense_date)
-        BETWEEN ? AND ?
-      `;
+  if (
+    !dateRegex.test(startDate) ||
+    !dateRegex.test(endDate)
+  ) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid date format",
+    });
+  }
 
-      billParams.push(
-        startDate,
-        endDate
-      );
+  billDateWhere = `
+    AND DATE(
+      DATE_ADD(
+        b.created_at,
+        INTERVAL 330 MINUTE
+      )
+    )
+    BETWEEN '${startDate}' AND '${endDate}'
+  `;
 
-      expenseParams.push(
-        startDate,
-        endDate
-      );
-    }
-
+  expenseDateWhere = `
+    AND DATE(expense_date)
+    BETWEEN '${startDate}' AND '${endDate}'
+  `;
+}
     // ==================================================
     // INVALID FILTER
     // ==================================================
@@ -498,31 +500,25 @@ exports.getReports = async (req, res) => {
       `;
     }
 
-    else if (filter === "custom") {
-      staffDateWhere = `
-        AND DATE(
-          DATE_ADD(
-            b.created_at,
-            INTERVAL 330 MINUTE
-          )
-        )
-        BETWEEN ? AND ?
-      `;
-    }
+else if (filter === "custom") {
+  staffDateWhere = `
+    AND DATE(
+      DATE_ADD(
+        b.created_at,
+        INTERVAL 330 MINUTE
+      )
+    )
+    BETWEEN '${startDate}' AND '${endDate}'
+  `;
+}
 
     // ==================================================
     // STAFF QUERY
     // ==================================================
-
-    const staffQueryParams =
-      [shop_id, shop_id];
-
-    if (filter === "custom") {
-      staffQueryParams.push(
-        startDate,
-        endDate
-      );
-    }
+const staffQueryParams = [
+  shop_id,
+  shop_id,
+];
 
     const [staffRows] = await db.query(
       `
