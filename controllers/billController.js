@@ -105,41 +105,27 @@ exports.createBill = async (req, res) => {
     // ----------------------------------------------------------
     // GENERATE BILL ID
     // ----------------------------------------------------------
-    // bills.id itself is used as Bill No.
-    //
-    // Lock the shop row first so multiple staff/devices from
-    // the same shop cannot generate the same next ID.
-    //
-    // Example:
-    // 9001 -> 9002 -> 9003 -> 9004
-    //
-    // TiDB sequence is NOT used here.
+    // bills.id is the PRIMARY KEY.
+    // TiDB sequence is used for unique bill IDs.
+    // DO NOT use MAX(id) + 1.
     // ----------------------------------------------------------
 
-// ----------------------------------------------------------
-// GENERATE BILL ID
-// ----------------------------------------------------------
-// bills.id is the PRIMARY KEY.
-// Use TiDB sequence so every bill gets a unique ID.
-// DO NOT use MAX(id) + 1.
-// ----------------------------------------------------------
+    const [sequenceRows] = await connection.query(
+      `SELECT NEXTVAL(bills_id_seq) AS id`
+    );
 
-const [sequenceRows] = await connection.query(
-  `SELECT NEXTVAL(bills_id_seq) AS id`
-);
+    const billId = Number(
+      sequenceRows[0]?.id || 0
+    );
 
-const billId = Number(
-  sequenceRows[0]?.id || 0
-);
+    if (!billId || billId <= 0) {
+      await connection.rollback();
 
-if (!billId || billId <= 0) {
-  await connection.rollback();
-
-  return res.status(500).json({
-    success: false,
-    message: "Failed to generate bill ID",
-  });
-}
+      return res.status(500).json({
+        success: false,
+        message: "Failed to generate bill ID",
+      });
+    }
 
     // ----------------------------------------------------------
     // INSERT BILL
@@ -379,7 +365,12 @@ exports.updateBill = async (req, res) => {
     await connection.beginTransaction();
 
     const billId = req.params.id;
+
     const shop_id = req.user.shop_id;
+
+    // IMPORTANT:
+    // Whoever is currently logged in and edits the bill
+    // will be stored as edited_by.
     const edited_by = req.user.user_id;
 
     const {
@@ -431,6 +422,7 @@ exports.updateBill = async (req, res) => {
 
     // ----------------------------------------------------------
     // STAFF CAN EDIT ONLY THEIR OWN BILL
+    // OWNER CAN EDIT ANY BILL IN THEIR SHOP
     // ----------------------------------------------------------
 
     const role =
@@ -715,6 +707,15 @@ exports.updateBill = async (req, res) => {
     // ----------------------------------------------------------
     // UPDATE BILL
     // ----------------------------------------------------------
+    //
+    // IMPORTANT:
+    // edited_by stores the USER ID of the person
+    // who actually performed the edit.
+    //
+    // Example:
+    // Jinna edits -> edited_by = Jinna user ID
+    // Owner edits -> edited_by = Owner user ID
+    // ----------------------------------------------------------
 
     await connection.query(
       `UPDATE bills
@@ -787,24 +788,35 @@ exports.getBills = async (req, res) => {
       (req.user.role || "")
         .toString()
         .toLowerCase();
-let query = `
-  SELECT
-    b.*,
-    u.username AS created_by_name,
-    s.owner_name AS edited_by_name
-  FROM bills b
 
-  LEFT JOIN users u
-    ON b.created_by = u.id
+    // ----------------------------------------------------------
+    // IMPORTANT:
+    // created_by = users.id
+    // edited_by  = users.id
+    //
+    // Therefore:
+    // u.name  -> person who created the bill
+    // eu.name -> person who edited the bill
+    //
+    // We intentionally use NAME, NOT username/phone.
+    // ----------------------------------------------------------
 
-  LEFT JOIN users eu
-    ON b.edited_by = eu.id
+    let query = `
+      SELECT
+        b.*,
+        u.name AS created_by_name,
+        eu.name AS edited_by_name
+      FROM bills b
 
-  LEFT JOIN shops s
-    ON eu.shop_id = s.id
+      LEFT JOIN users u
+        ON b.created_by = u.id
 
-  WHERE b.shop_id = ?
-`;
+      LEFT JOIN users eu
+        ON b.edited_by = eu.id
+
+      WHERE b.shop_id = ?
+    `;
+
     const params = [shop_id];
 
     // ----------------------------------------------------------
