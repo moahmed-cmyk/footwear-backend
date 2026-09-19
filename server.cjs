@@ -958,6 +958,15 @@ const [plans] = await db.query(
 // ======================================================
 
 app.get("/notifications", verifyToken, async (req, res) => {
+
+  if ((req.user.role || "").toLowerCase() !== "owner") {
+  return res.status(403).json({
+    success: false,
+    message: "Notifications are available only for owner",
+    unread_count: 0,
+    notifications: [],
+  });
+}
   try {
     const [rows] = await db.query(
       `SELECT *
