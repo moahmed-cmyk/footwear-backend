@@ -9,10 +9,12 @@ exports.createBill = async (req, res) => {
 
   try {
     await connection.beginTransaction();
+const shop_id = req.user.shop_id;
+const created_by = req.user.user_id;
 
-    const shop_id = req.user.shop_id;
-    const created_by = req.user.user_id;
-
+const role = (req.user.role || "")
+  .toString()
+  .toLowerCase();
     const {
       customer_name,
       discount,
@@ -304,22 +306,30 @@ exports.createBill = async (req, res) => {
     // NEW BILL NOTIFICATION
     // ----------------------------------------------------------
 
-    await connection.query(
-      `INSERT INTO notifications
-      (
-        shop_id,
-        title,
-        message,
-        type
-      )
-      VALUES (?, ?, ?, ?)`,
-      [
-        shop_id,
-        "New Bill Created",
-        `Bill #${billId} created. Amount ₹${finalTotal}`,
-        "bill",
-      ]
-    );
+  // ----------------------------------------------------------
+// NEW BILL NOTIFICATION
+// STAFF BILL ONLY
+// OWNER BILL SHOULD NOT CREATE NOTIFICATION
+// ----------------------------------------------------------
+
+if (role === "staff") {
+  await connection.query(
+    `INSERT INTO notifications
+    (
+      shop_id,
+      title,
+      message,
+      type
+    )
+    VALUES (?, ?, ?, ?)`,
+    [
+      shop_id,
+      "New Bill Created",
+      `Bill #${billId} created. Amount ₹${finalTotal}`,
+      "bill",
+    ]
+  );
+}
 
     // ----------------------------------------------------------
     // COMMIT
