@@ -874,17 +874,91 @@ async function findOrCreateProduct(
         // Insert items
         // -----------------------------------------------
 
-        await insertItemsAndApplyStock({
-          connection,
-          purchaseEntryId:
-            result.insertId,
-          shopId,
-          status,
-          invoiceNumber,
-          items,
-        });
+  await insertItemsAndApplyStock({
+  connection,
+  purchaseEntryId: result.insertId,
+  shopId,
+  status,
+  invoiceNumber,
+  items,
+});
 
-        await connection.commit();
+
+// =====================================================
+// PURCHASE NOTIFICATION
+// STAFF PURCHASE -> OWNER NOTIFICATION
+// OWNER PURCHASE -> NO NOTIFICATION
+// ONLY COMPLETED PURCHASE
+// =====================================================
+
+const role = cleanText(req.user.role).toLowerCase();
+
+if (role === "staff" && status === "completed") {
+
+  let creatorName = "Staff";
+
+  try {
+
+    const [userRows] = await connection.query(
+      `
+      SELECT name, username
+      FROM users
+      WHERE id = ?
+        AND shop_id = ?
+      LIMIT 1
+      `,
+      [
+        userId,
+        shopId,
+      ]
+    );
+
+    if (userRows.length > 0) {
+
+      creatorName =
+        cleanText(userRows[0].name) ||
+        cleanText(userRows[0].username) ||
+        "Staff";
+
+    }
+
+  } catch (userError) {
+
+    console.error(
+      "PURCHASE CREATOR NAME FETCH ERROR:",
+      userError
+    );
+
+  }
+
+
+  await connection.query(
+    `
+    INSERT INTO notifications
+    (
+      shop_id,
+      title,
+      message,
+      type
+    )
+    VALUES (?, ?, ?, ?)
+    `,
+    [
+      shopId,
+
+      "New Purchase Created",
+
+      `Purchase #${result.insertId} created by ${creatorName}. Supplier ${supplierName}. Amount ₹${totalAmount}`,
+
+      "purchase",
+    ]
+  );
+
+}
+
+
+await connection.commit();
+transactionStarted = false;
         transactionStarted = false;
 
         return res.status(201).json({
