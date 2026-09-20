@@ -304,28 +304,53 @@ const role = (req.user.role || "")
 
     // ----------------------------------------------------------
     // NEW BILL NOTIFICATION
-    // ----------------------------------------------------------
-
-  // ----------------------------------------------------------
+    // ----------------------------------------------------------// ==========================================================
 // NEW BILL NOTIFICATION
-// STAFF BILL ONLY
-// OWNER BILL SHOULD NOT CREATE NOTIFICATION
-// ----------------------------------------------------------
+// OWNER BILL -> NO NOTIFICATION
+// STAFF BILL -> OWNER GETS NOTIFICATION
+// ==========================================================
 
 if (role === "staff") {
+  let creatorName = "Staff";
+
+  try {
+    const [userRows] = await connection.query(
+      `
+      SELECT name
+      FROM users
+      WHERE id = ?
+        AND shop_id = ?
+      LIMIT 1
+      `,
+      [created_by, shop_id]
+    );
+
+    if (userRows.length > 0) {
+      creatorName =
+        userRows[0].name?.toString().trim() || "Staff";
+    }
+  } catch (userError) {
+    console.error(
+      "CREATOR NAME FETCH ERROR:",
+      userError
+    );
+  }
+
   await connection.query(
-    `INSERT INTO notifications
+    `
+    INSERT INTO notifications
     (
       shop_id,
       title,
       message,
       type
     )
-    VALUES (?, ?, ?, ?)`,
+    VALUES (?, ?, ?, ?)
+    `,
     [
       shop_id,
       "New Bill Created",
-      `Bill #${billId} created. Amount ₹${finalTotal}`,
+      `Bill #${billId} created by ${creatorName}. Amount ₹${finalTotal}`,
       "bill",
     ]
   );
