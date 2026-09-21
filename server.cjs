@@ -239,7 +239,7 @@ app.get(
         `
         SELECT
           e.*,
-          u.username AS created_by_name
+          COALESCE(NULLIF(u.name, ''), u.username) AS created_by_name
         FROM expenses e
         LEFT JOIN users u
           ON u.id = e.created_by
@@ -263,7 +263,6 @@ app.get(
     }
   }
 );
-
 // ======================================================
 // UPDATE EXPENSE
 // ======================================================
