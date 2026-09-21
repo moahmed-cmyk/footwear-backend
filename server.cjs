@@ -65,84 +65,91 @@ app.get("/", async (req, res) => {
 // ======================================================
 // NET PROFIT
 // ======================================================
+
 app.get(
   "/net-profit",
   verifyToken,
   checkSubscription,
   requirePermission("reports"),
   async (req, res) => {
-  try {
-    const shopId = req.user.shop_id;
-    const { startDate, endDate } = req.query;
+    try {
+      const shopId = req.user.shop_id;
+      const { startDate, endDate } = req.query;
 
-    let billWhere = "WHERE b.shop_id = ?";
-    let expenseWhere = "WHERE shop_id = ?";
+      let billWhere = "WHERE b.shop_id = ?";
+      let expenseWhere = "WHERE shop_id = ?";
 
-    const billParams = [shopId];
-    const expenseParams = [shopId];
+      const billParams = [shopId];
+      const expenseParams = [shopId];
 
-    if (startDate && endDate) {
-      billWhere += " AND DATE(b.created_at) BETWEEN ? AND ?";
-      expenseWhere += " AND DATE(expense_date) BETWEEN ? AND ?";
+      if (startDate && endDate) {
+        billWhere += " AND DATE(b.created_at) BETWEEN ? AND ?";
+        expenseWhere += " AND DATE(expense_date) BETWEEN ? AND ?";
 
-      billParams.push(startDate, endDate);
-      expenseParams.push(startDate, endDate);
+        billParams.push(startDate, endDate);
+        expenseParams.push(startDate, endDate);
+      }
+
+      const [profitRows] = await db.query(
+        `
+        SELECT
+          COALESCE(SUM(b.total), 0) AS total_sales,
+          COALESCE(SUM(bi.profit), 0) AS item_profit,
+          COALESCE(SUM(DISTINCT b.discount), 0) AS total_discount
+        FROM bills b
+        LEFT JOIN bill_items bi ON bi.bill_id = b.id
+        ${billWhere}
+        `,
+        billParams
+      );
+
+      const [expenseRows] = await db.query(
+        `
+        SELECT COALESCE(SUM(amount), 0) AS total_expenses
+        FROM expenses
+        ${expenseWhere}
+        `,
+        expenseParams
+      );
+
+      const totalSales = Number(profitRows[0].total_sales || 0);
+
+      const totalProfit =
+        Number(profitRows[0].item_profit || 0) -
+        Number(profitRows[0].total_discount || 0);
+
+      const totalExpenses = Number(
+        expenseRows[0].total_expenses || 0
+      );
+
+      const netProfit = totalProfit - totalExpenses;
+
+      res.json({
+        success: true,
+        report: {
+          total_sales: totalSales,
+          total_profit: totalProfit,
+          total_expenses: totalExpenses,
+          net_profit: netProfit,
+        },
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message,
+      });
     }
-
-    const [profitRows] = await db.query(
-      `
-      SELECT
-        COALESCE(SUM(b.total), 0) AS total_sales,
-        COALESCE(SUM(bi.profit), 0) AS item_profit,
-        COALESCE(SUM(DISTINCT b.discount), 0) AS total_discount
-      FROM bills b
-      LEFT JOIN bill_items bi ON bi.bill_id = b.id
-      ${billWhere}
-      `,
-      billParams
-    );
-
-    const [expenseRows] = await db.query(
-      `
-      SELECT COALESCE(SUM(amount), 0) AS total_expenses
-      FROM expenses
-      ${expenseWhere}
-      `,
-      expenseParams
-    );
-
-    const totalSales = Number(profitRows[0].total_sales || 0);
-
-    const totalProfit =
-      Number(profitRows[0].item_profit || 0) -
-      Number(profitRows[0].total_discount || 0);
-
-    const totalExpenses = Number(expenseRows[0].total_expenses || 0);
-    const netProfit = totalProfit - totalExpenses;
-
-    res.json({
-      success: true,
-      report: {
-        total_sales: totalSales,
-        total_profit: totalProfit,
-        total_expenses: totalExpenses,
-        net_profit: netProfit,
-      },
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
   }
-});
+);
 
 // ======================================================
 // EXPENSES
 // Permission: expenses
 // ======================================================
 
+// ======================================================
 // ADD EXPENSE
+// ======================================================
 
 app.post(
   "/expenses",
@@ -151,7 +158,13 @@ app.post(
   requirePermission("expenses"),
   async (req, res) => {
     try {
-      const { title, amount, category, expense_date } = req.body;
+      const {
+        title,
+        amount,
+        category,
+        payment_mode,
+        expense_date,
+      } = req.body;
 
       if (!title || !amount || !expense_date) {
         return res.status(400).json({
@@ -160,15 +173,36 @@ app.post(
         });
       }
 
+      const allowedPaymentModes = [
+        "Cash",
+        "UPI",
+        "Bank",
+        "Other",
+      ];
+
+      const finalPaymentMode =
+        allowedPaymentModes.includes(payment_mode)
+          ? payment_mode
+          : "Cash";
+
       const [result] = await db.query(
         `INSERT INTO expenses
-        (shop_id, title, amount, category, expense_date, created_by)
-        VALUES (?, ?, ?, ?, ?, ?)`,
+        (
+          shop_id,
+          title,
+          amount,
+          category,
+          payment_mode,
+          expense_date,
+          created_by
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
           req.user.shop_id,
           title,
           amount,
-          category || "",
+          category || "General",
+          finalPaymentMode,
           expense_date,
           req.user.user_id,
         ]
@@ -180,6 +214,8 @@ app.post(
         expense_id: result.insertId,
       });
     } catch (error) {
+      console.error("ADD EXPENSE ERROR:", error);
+
       res.status(500).json({
         success: false,
         error: error.message,
@@ -188,7 +224,9 @@ app.post(
   }
 );
 
+// ======================================================
 // GET EXPENSES
+// ======================================================
 
 app.get(
   "/expenses",
@@ -216,6 +254,8 @@ app.get(
         expenses,
       });
     } catch (error) {
+      console.error("GET EXPENSES ERROR:", error);
+
       res.status(500).json({
         success: false,
         error: error.message,
@@ -224,7 +264,9 @@ app.get(
   }
 );
 
+// ======================================================
 // UPDATE EXPENSE
+// ======================================================
 
 app.put(
   "/expenses/:id",
@@ -238,7 +280,13 @@ app.put(
       const userId = req.user.user_id;
       const role = (req.user.role || "").toLowerCase();
 
-      const { title, amount } = req.body;
+      const {
+        title,
+        amount,
+        category,
+        payment_mode,
+        expense_date,
+      } = req.body;
 
       if (!title || !amount) {
         return res.status(400).json({
@@ -247,14 +295,42 @@ app.put(
         });
       }
 
+      const allowedPaymentModes = [
+        "Cash",
+        "UPI",
+        "Bank",
+        "Other",
+      ];
+
+      const finalPaymentMode =
+        allowedPaymentModes.includes(payment_mode)
+          ? payment_mode
+          : "Cash";
+
       let query = `
         UPDATE expenses
-        SET title = ?, amount = ?
-        WHERE id = ? AND shop_id = ?
+        SET
+          title = ?,
+          amount = ?,
+          category = ?,
+          payment_mode = ?,
+          expense_date = ?
+        WHERE id = ?
+          AND shop_id = ?
       `;
 
-      const params = [title, amount, expenseId, shopId];
+      const params = [
+        title,
+        amount,
+        category || "General",
+        finalPaymentMode,
+        expense_date || new Date().toISOString().split("T")[0],
+        expenseId,
+        shopId,
+      ];
 
+      // Staff can edit only their own expense.
+      // Owner can edit any expense in the shop.
       if (role !== "owner") {
         query += ` AND created_by = ?`;
         params.push(userId);
@@ -274,6 +350,8 @@ app.put(
         message: "Expense updated successfully",
       });
     } catch (error) {
+      console.error("UPDATE EXPENSE ERROR:", error);
+
       res.status(500).json({
         success: false,
         error: error.message,
@@ -282,8 +360,10 @@ app.put(
   }
 );
 
+// ======================================================
 // DELETE EXPENSE
 // Owner only + expenses permission
+// ======================================================
 
 app.delete(
   "/expenses/:id",
@@ -300,8 +380,13 @@ app.delete(
       }
 
       const [result] = await db.query(
-        `DELETE FROM expenses WHERE id = ? AND shop_id = ?`,
-        [req.params.id, req.user.shop_id]
+        `DELETE FROM expenses
+         WHERE id = ?
+         AND shop_id = ?`,
+        [
+          req.params.id,
+          req.user.shop_id,
+        ]
       );
 
       if (result.affectedRows === 0) {
@@ -316,6 +401,8 @@ app.delete(
         message: "Expense deleted successfully",
       });
     } catch (error) {
+      console.error("DELETE EXPENSE ERROR:", error);
+
       res.status(500).json({
         success: false,
         error: error.message,
@@ -344,36 +431,37 @@ app.get(
   checkSubscription,
   requirePermission("reports"),
   async (req, res) => {
-  try {
-    const shopId = req.user.shop_id;
+    try {
+      const shopId = req.user.shop_id;
 
-    const [rows] = await db.query(
-      `
-      SELECT
-        product_name,
-        SUM(quantity) AS total_qty
-      FROM bill_items bi
-      INNER JOIN bills b
-        ON b.id = bi.bill_id
-      WHERE b.shop_id = ?
-      GROUP BY product_name
-      ORDER BY total_qty DESC
-      LIMIT 20
-      `,
-      [shopId]
-    );
+      const [rows] = await db.query(
+        `
+        SELECT
+          product_name,
+          SUM(quantity) AS total_qty
+        FROM bill_items bi
+        INNER JOIN bills b
+          ON b.id = bi.bill_id
+        WHERE b.shop_id = ?
+        GROUP BY product_name
+        ORDER BY total_qty DESC
+        LIMIT 20
+        `,
+        [shopId]
+      );
 
-    res.json({
-      success: true,
-      products: rows,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+      res.json({
+        success: true,
+        products: rows,
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message,
+      });
+    }
   }
-});
+);
 
 // ======================================================
 // SALES REPORT
@@ -385,216 +473,304 @@ app.get(
   checkSubscription,
   requirePermission("reports"),
   async (req, res) => {
-  try {
-    const shopId = req.user.shop_id;
+    try {
+      const shopId = req.user.shop_id;
 
-    const [bills] = await db.query(
-      `
-      SELECT
-        id,
-        customer_name,
-        total,
-        discount,
-        created_at
-      FROM bills
-      WHERE shop_id = ?
-      ORDER BY id DESC
-      `,
-      [shopId]
-    );
+      const [bills] = await db.query(
+        `
+        SELECT
+          id,
+          customer_name,
+          total,
+          discount,
+          created_at
+        FROM bills
+        WHERE shop_id = ?
+        ORDER BY id DESC
+        `,
+        [shopId]
+      );
 
-    res.json({
-      success: true,
-      bills,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+      res.json({
+        success: true,
+        bills,
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message,
+      });
+    }
   }
-});
+);
 
 // ======================================================
 // DASHBOARD
 // ======================================================
+
 app.get(
   "/dashboard",
   verifyToken,
   checkSubscription,
   requirePermission("reports"),
   async (req, res) => {
-  try {
-    const shopId = req.user.shop_id;
-    const { filter = "today", startDate, endDate } = req.query;
+    try {
+      const shopId = req.user.shop_id;
+      const {
+        filter = "today",
+        startDate,
+        endDate,
+      } = req.query;
 
-    let billDateWhere = "";
-    let billParams = [shopId];
+      let billDateWhere = "";
+      let billParams = [shopId];
 
-    let expenseDateWhere = "";
-    let expenseParams = [shopId];
+      let expenseDateWhere = "";
+      let expenseParams = [shopId];
 
-    if (filter === "today") {
-      billDateWhere = " AND DATE(b.created_at) = CURDATE()";
-      expenseDateWhere = " AND DATE(created_at) = CURDATE()";
+      if (filter === "today") {
+        billDateWhere =
+          " AND DATE(b.created_at) = CURDATE()";
+
+        expenseDateWhere =
+          " AND DATE(created_at) = CURDATE()";
+      }
+
+      if (filter === "month") {
+        billDateWhere =
+          " AND MONTH(b.created_at) = MONTH(CURDATE()) AND YEAR(b.created_at) = YEAR(CURDATE())";
+
+        expenseDateWhere =
+          " AND MONTH(created_at) = MONTH(CURDATE()) AND YEAR(created_at) = YEAR(CURDATE())";
+      }
+
+      if (
+        filter === "custom" &&
+        startDate &&
+        endDate
+      ) {
+        billDateWhere =
+          " AND DATE(b.created_at) BETWEEN ? AND ?";
+
+        expenseDateWhere =
+          " AND DATE(created_at) BETWEEN ? AND ?";
+
+        billParams.push(
+          startDate,
+          endDate
+        );
+
+        expenseParams.push(
+          startDate,
+          endDate
+        );
+      }
+
+      const [salesRows] = await db.query(
+        `
+        SELECT
+          COALESCE(SUM(bi.profit), 0) AS item_profit,
+          COALESCE(SUM(bi.quantity), 0) AS total_items,
+          COUNT(DISTINCT b.id) AS total_bills
+        FROM bills b
+        LEFT JOIN bill_items bi
+          ON bi.bill_id = b.id
+        WHERE b.shop_id = ?
+        ${billDateWhere}
+        `,
+        billParams
+      );
+
+      const [billRows] = await db.query(
+        `
+        SELECT
+          COALESCE(SUM(total), 0) AS total_sales,
+          COALESCE(SUM(discount), 0) AS total_discount,
+          COALESCE(
+            SUM(
+              CASE
+                WHEN LOWER(payment_type) = 'cash'
+                THEN total
+                ELSE 0
+              END
+            ),
+            0
+          ) AS cash_sales,
+          COALESCE(
+            SUM(
+              CASE
+                WHEN LOWER(payment_type) = 'upi'
+                THEN total
+                ELSE 0
+              END
+            ),
+            0
+          ) AS upi_sales
+        FROM bills b
+        WHERE b.shop_id = ?
+        ${billDateWhere}
+        `,
+        billParams
+      );
+
+      const [expenseRows] = await db.query(
+        `
+        SELECT
+          COALESCE(SUM(amount), 0) AS total_expenses
+        FROM expenses
+        WHERE shop_id = ?
+        ${expenseDateWhere}
+        `,
+        expenseParams
+      );
+
+      const grossProfit =
+        Number(
+          salesRows[0].item_profit || 0
+        ) -
+        Number(
+          billRows[0].total_discount || 0
+        );
+
+      const netProfit =
+        grossProfit -
+        Number(
+          expenseRows[0].total_expenses || 0
+        );
+
+      const [productRows] = await db.query(
+        `
+        SELECT
+          COUNT(*) AS total_products,
+          COALESCE(
+            SUM(
+              CASE
+                WHEN stock <= 5
+                THEN 1
+                ELSE 0
+              END
+            ),
+            0
+          ) AS low_stock_count
+        FROM products
+        WHERE shop_id = ?
+        `,
+        [shopId]
+      );
+
+      const [topRows] = await db.query(
+        `
+        SELECT
+          bi.product_name,
+          SUM(bi.quantity) AS total_qty
+        FROM bill_items bi
+        INNER JOIN bills b
+          ON b.id = bi.bill_id
+        WHERE b.shop_id = ?
+        ${billDateWhere}
+        GROUP BY bi.product_name
+        ORDER BY total_qty DESC
+        LIMIT 1
+        `,
+        billParams
+      );
+
+      res.json({
+        success: true,
+        dashboard: {
+          total_sales:
+            billRows[0].total_sales,
+
+          cash_sales:
+            billRows[0].cash_sales,
+
+          upi_sales:
+            billRows[0].upi_sales,
+
+          total_discount:
+            billRows[0].total_discount,
+
+          total_expenses:
+            expenseRows[0].total_expenses,
+
+          total_profit:
+            netProfit,
+
+          total_items:
+            salesRows[0].total_items,
+
+          total_bills:
+            salesRows[0].total_bills,
+
+          total_products:
+            productRows[0].total_products,
+
+          low_stock_count:
+            productRows[0].low_stock_count,
+
+          top_product:
+            topRows.length > 0
+              ? topRows[0].product_name
+              : "No sales",
+
+          top_qty:
+            topRows.length > 0
+              ? topRows[0].total_qty
+              : 0,
+        },
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message,
+      });
     }
-
-    if (filter === "month") {
-      billDateWhere =
-        " AND MONTH(b.created_at) = MONTH(CURDATE()) AND YEAR(b.created_at) = YEAR(CURDATE())";
-      expenseDateWhere =
-        " AND MONTH(created_at) = MONTH(CURDATE()) AND YEAR(created_at) = YEAR(CURDATE())";
-    }
-
-    if (filter === "custom" && startDate && endDate) {
-      billDateWhere = " AND DATE(b.created_at) BETWEEN ? AND ?";
-      expenseDateWhere = " AND DATE(created_at) BETWEEN ? AND ?";
-      billParams.push(startDate, endDate);
-      expenseParams.push(startDate, endDate);
-    }
-
-    const [salesRows] = await db.query(
-      `
-      SELECT
-        COALESCE(SUM(bi.profit), 0) AS item_profit,
-        COALESCE(SUM(bi.quantity), 0) AS total_items,
-        COUNT(DISTINCT b.id) AS total_bills
-      FROM bills b
-      LEFT JOIN bill_items bi ON bi.bill_id = b.id
-      WHERE b.shop_id = ?
-      ${billDateWhere}
-      `,
-      billParams
-    );
-
-    const [billRows] = await db.query(
-      `
-      SELECT
-        COALESCE(SUM(total), 0) AS total_sales,
-        COALESCE(SUM(discount), 0) AS total_discount,
-        COALESCE(SUM(CASE WHEN LOWER(payment_type) = 'cash' THEN total ELSE 0 END), 0) AS cash_sales,
-        COALESCE(SUM(CASE WHEN LOWER(payment_type) = 'upi' THEN total ELSE 0 END), 0) AS upi_sales
-      FROM bills b
-      WHERE b.shop_id = ?
-      ${billDateWhere}
-      `,
-      billParams
-    );
-
-    const [expenseRows] = await db.query(
-      `
-      SELECT COALESCE(SUM(amount), 0) AS total_expenses
-      FROM expenses
-      WHERE shop_id = ?
-      ${expenseDateWhere}
-      `,
-      expenseParams
-    );
-
-    const grossProfit =
-      Number(salesRows[0].item_profit || 0) -
-      Number(billRows[0].total_discount || 0);
-
-    const netProfit =
-      grossProfit - Number(expenseRows[0].total_expenses || 0);
-
-    const [productRows] = await db.query(
-      `
-      SELECT
-        COUNT(*) AS total_products,
-        COALESCE(SUM(CASE WHEN stock <= 5 THEN 1 ELSE 0 END), 0) AS low_stock_count
-      FROM products
-      WHERE shop_id = ?
-      `,
-      [shopId]
-    );
-
-    const [topRows] = await db.query(
-      `
-      SELECT
-        bi.product_name,
-        SUM(bi.quantity) AS total_qty
-      FROM bill_items bi
-      INNER JOIN bills b ON b.id = bi.bill_id
-      WHERE b.shop_id = ?
-      ${billDateWhere}
-      GROUP BY bi.product_name
-      ORDER BY total_qty DESC
-      LIMIT 1
-      `,
-      billParams
-    );
-
-    res.json({
-      success: true,
-      dashboard: {
-        total_sales: billRows[0].total_sales,
-        cash_sales: billRows[0].cash_sales,
-        upi_sales: billRows[0].upi_sales,
-        total_discount: billRows[0].total_discount,
-        total_expenses: expenseRows[0].total_expenses,
-        total_profit: netProfit,
-        total_items: salesRows[0].total_items,
-        total_bills: salesRows[0].total_bills,
-        total_products: productRows[0].total_products,
-        low_stock_count: productRows[0].low_stock_count,
-        top_product:
-          topRows.length > 0 ? topRows[0].product_name : "No sales",
-        top_qty: topRows.length > 0 ? topRows[0].total_qty : 0,
-      },
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
   }
-});
+);
 
 // ======================================================
 // LOW STOCK
 // ======================================================
+
 app.get(
   "/low-stock",
   verifyToken,
   checkSubscription,
   requirePermission("stock"),
   async (req, res) => {
-  try {
-    const shopId = req.user.shop_id;
+    try {
+      const shopId = req.user.shop_id;
 
-    const [products] = await db.query(
-      `
-      SELECT
-        id,
-        barcode,
-        name,
-        size,
-        mrp,
-        stock
-      FROM products
-      WHERE shop_id = ?
-      AND stock <= 5
-      ORDER BY stock ASC
-      `,
-      [shopId]
-    );
+      const [products] = await db.query(
+        `
+        SELECT
+          id,
+          barcode,
+          name,
+          size,
+          mrp,
+          stock
+        FROM products
+        WHERE shop_id = ?
+        AND stock <= 5
+        ORDER BY stock ASC
+        `,
+        [shopId]
+      );
 
-    res.json({
-      success: true,
-      products,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+      res.json({
+        success: true,
+        products,
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message,
+      });
+    }
   }
-});
+);
 
-// ======================================================
-// STAFF LIST
-// ======================================================
 // ======================================================
 // STAFF LIST
 // ======================================================
@@ -630,7 +806,10 @@ app.get(
         staff,
       });
     } catch (error) {
-      console.error("GET STAFF ERROR:", error);
+      console.error(
+        "GET STAFF ERROR:",
+        error
+      );
 
       res.status(500).json({
         success: false,
@@ -639,384 +818,488 @@ app.get(
     }
   }
 );
+
 // ======================================================
 // STAFF STATUS
 // ======================================================
 
-app.put("/staff/:id/status", verifyToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { status } = req.body;
+app.put(
+  "/staff/:id/status",
+  verifyToken,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { status } = req.body;
 
-    if (req.user.role !== "owner") {
-      return res.status(403).json({
+      if (req.user.role !== "owner") {
+        return res.status(403).json({
+          success: false,
+          message:
+            "Only owner can update staff",
+        });
+      }
+
+      if (
+        status !== "active" &&
+        status !== "inactive"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid status",
+        });
+      }
+
+      await db.query(
+        `
+        UPDATE users
+        SET status = ?
+        WHERE id = ?
+          AND shop_id = ?
+          AND role = 'staff'
+        `,
+        [
+          status,
+          id,
+          req.user.shop_id,
+        ]
+      );
+
+      res.json({
+        success: true,
+        message:
+          status === "active"
+            ? "Staff enabled successfully"
+            : "Staff disabled successfully",
+      });
+    } catch (error) {
+      res.status(500).json({
         success: false,
-        message: "Only owner can update staff",
+        error: error.message,
       });
     }
-
-    if (status !== "active" && status !== "inactive") {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid status",
-      });
-    }
-
-    await db.query(
-      `UPDATE users
-      SET status = ?
-      WHERE id = ? AND shop_id = ? AND role = 'staff'`,
-      [status, id, req.user.shop_id]
-    );
-
-    res.json({
-      success: true,
-      message:
-        status === "active"
-          ? "Staff enabled successfully"
-          : "Staff disabled successfully",
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
   }
-});
+);
 
 // ======================================================
 // STAFF SALES
 // ======================================================
+
 app.get(
   "/staff-sales",
   verifyToken,
   checkSubscription,
   requirePermission("reports"),
   async (req, res) => {
-  try {
-    const shopId = req.user.shop_id;
+    try {
+      const shopId = req.user.shop_id;
 
-    const [rows] = await db.query(
-      `
-      SELECT
-        u.username AS staff_name,
-        COUNT(b.id) AS total_bills,
-        COALESCE(SUM(b.total), 0) AS total_sales,
-        COALESCE(SUM(b.discount), 0) AS total_discount
-      FROM users u
-      LEFT JOIN bills b 
-        ON b.created_by = u.id 
-        AND b.shop_id = u.shop_id
-      WHERE u.shop_id = ?
-      GROUP BY u.id, u.username
-      ORDER BY total_sales DESC
-      `,
-      [shopId]
-    );
+      const [rows] = await db.query(
+        `
+        SELECT
+          u.username AS staff_name,
+          COUNT(b.id) AS total_bills,
+          COALESCE(SUM(b.total), 0) AS total_sales,
+          COALESCE(SUM(b.discount), 0) AS total_discount
+        FROM users u
+        LEFT JOIN bills b
+          ON b.created_by = u.id
+          AND b.shop_id = u.shop_id
+        WHERE u.shop_id = ?
+        GROUP BY u.id, u.username
+        ORDER BY total_sales DESC
+        `,
+        [shopId]
+      );
 
-    res.json({
-      success: true,
-      reports: rows,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+      res.json({
+        success: true,
+        reports: rows,
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message,
+      });
+    }
   }
-});
+);
 
 // ======================================================
 // PROFIT REPORT
 // ======================================================
+
 app.get(
   "/profit-report",
   verifyToken,
   checkSubscription,
   requirePermission("reports"),
   async (req, res) => {
-  try {
-    const shopId = req.user.shop_id;
-    const { startDate, endDate } = req.query;
+    try {
+      const shopId = req.user.shop_id;
+      const {
+        startDate,
+        endDate,
+      } = req.query;
 
-    let dateWhere = "";
-    const params = [shopId];
+      let dateWhere = "";
+      const params = [shopId];
 
-    if (startDate && endDate) {
-      dateWhere = " AND DATE(b.created_at) BETWEEN ? AND ?";
-      params.push(startDate, endDate);
+      if (startDate && endDate) {
+        dateWhere =
+          " AND DATE(b.created_at) BETWEEN ? AND ?";
+
+        params.push(
+          startDate,
+          endDate
+        );
+      }
+
+      const [rows] = await db.query(
+        `
+        SELECT
+          COALESCE(SUM(bi.total), 0)
+            AS total_sales,
+
+          COALESCE(
+            SUM(
+              bi.buying_price * bi.quantity
+            ),
+            0
+          ) AS total_buying,
+
+          COALESCE(
+            SUM(bi.profit),
+            0
+          ) AS total_profit,
+
+          COALESCE(
+            SUM(bi.quantity),
+            0
+          ) AS total_qty
+
+        FROM bill_items bi
+
+        INNER JOIN bills b
+          ON b.id = bi.bill_id
+
+        WHERE b.shop_id = ?
+
+        ${dateWhere}
+        `,
+        params
+      );
+
+      res.json({
+        success: true,
+        report: rows[0],
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message,
+      });
     }
-
-    const [rows] = await db.query(
-      `
-      SELECT
-        COALESCE(SUM(bi.total), 0) AS total_sales,
-        COALESCE(SUM(bi.buying_price * bi.quantity), 0) AS total_buying,
-        COALESCE(SUM(bi.profit), 0) AS total_profit,
-        COALESCE(SUM(bi.quantity), 0) AS total_qty
-      FROM bill_items bi
-      INNER JOIN bills b ON b.id = bi.bill_id
-      WHERE b.shop_id = ?
-      ${dateWhere}
-      `,
-      params
-    );
-
-    res.json({
-      success: true,
-      report: rows[0],
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
   }
-});
+);
 
 // ======================================================
 // SUBSCRIPTION STATUS
 // ======================================================
-app.get("/subscription-status", verifyToken, async (req, res) => {
-  console.log("SUBSCRIPTION USER:", req.user);
 
-  try {
-    const shopId = req.user.shop_id;
-
-    // ---------------------------------------------------------
-    // GET SHOP + CURRENT SUBSCRIPTION PLAN
-    // ---------------------------------------------------------
-
-    const [shopRows] = await db.query(
-      `
-      SELECT
-        s.id,
-        s.shop_name,
-        s.subscription_status,
-        s.subscription_end_date,
-
-        p.id AS plan_id,
-        p.plan_name,
-        p.price,
-        p.duration_days,
-        p.description
-
-      FROM shops s
-
-      LEFT JOIN subscription_plans p
-        ON p.id = s.subscription_plan_id
-
-      WHERE s.id = ?
-      LIMIT 1
-      `,
-      [shopId]
+app.get(
+  "/subscription-status",
+  verifyToken,
+  async (req, res) => {
+    console.log(
+      "SUBSCRIPTION USER:",
+      req.user
     );
 
-    console.log("SUBSCRIPTION CHECK DB:", shopRows);
+    try {
+      const shopId =
+        req.user.shop_id;
 
-    if (shopRows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Shop not found",
-      });
-    }
+      const [shopRows] =
+        await db.query(
+          `
+          SELECT
+            s.id,
+            s.shop_name,
+            s.subscription_status,
+            s.subscription_end_date,
 
-    const shop = shopRows[0];
+            p.id AS plan_id,
+            p.plan_name,
+            p.price,
+            p.duration_days,
+            p.description
 
-    // ---------------------------------------------------------
-    // GET AVAILABLE PLANS
-    // ---------------------------------------------------------
+          FROM shops s
 
-const [plans] = await db.query(
-  `
-  SELECT
-    p.id,
-    p.plan_name,
-    p.price,
-    p.duration_days,
-    p.description,
-    p.status
-  FROM subscription_plans p
-  INNER JOIN shops s
-    ON s.id = ?
-  WHERE p.status = 'active'
-    AND (
-      p.plan_name <> 'Free Trial'
-      OR (
-        p.id = 3
-        AND s.subscription_plan_id = 3
-        AND s.subscription_status = 'active'
-        AND s.subscription_end_date >= CURDATE()
-      )
-    )
-  ORDER BY p.price ASC
-  `,
-  [shopId]
-);
-    // ---------------------------------------------------------
-    // CALCULATE SUBSCRIPTION STATUS
-    // ---------------------------------------------------------
+          LEFT JOIN subscription_plans p
+            ON p.id =
+              s.subscription_plan_id
 
-    const today = new Date();
+          WHERE s.id = ?
+          LIMIT 1
+          `,
+          [shopId]
+        );
 
-    let expired = false;
-    let daysRemaining = 0;
-
-    if (!shop.subscription_end_date) {
-      expired = true;
-    } else {
-      const endDate = new Date(shop.subscription_end_date);
-
-      const todayDate = new Date(
-        today.getFullYear(),
-        today.getMonth(),
-        today.getDate()
+      console.log(
+        "SUBSCRIPTION CHECK DB:",
+        shopRows
       );
 
-      const endDateOnly = new Date(
-        endDate.getFullYear(),
-        endDate.getMonth(),
-        endDate.getDate()
-      );
+      if (shopRows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Shop not found",
+        });
+      }
 
-      const difference =
-        endDateOnly.getTime() - todayDate.getTime();
+      const shop =
+        shopRows[0];
 
-      daysRemaining = Math.max(
-        0,
-        Math.ceil(
-          difference / (1000 * 60 * 60 * 24)
-        )
-      );
+      const [plans] =
+        await db.query(
+          `
+          SELECT
+            p.id,
+            p.plan_name,
+            p.price,
+            p.duration_days,
+            p.description,
+            p.status
+
+          FROM subscription_plans p
+
+          INNER JOIN shops s
+            ON s.id = ?
+
+          WHERE p.status = 'active'
+
+          AND (
+            p.plan_name <> 'Free Trial'
+
+            OR (
+              p.id = 3
+              AND s.subscription_plan_id = 3
+              AND s.subscription_status = 'active'
+              AND s.subscription_end_date >= CURDATE()
+            )
+          )
+
+          ORDER BY p.price ASC
+          `,
+          [shopId]
+        );
+
+      const today =
+        new Date();
+
+      let expired = false;
+      let daysRemaining = 0;
 
       if (
-        shop.subscription_status !== "active" ||
-        daysRemaining <= 0
+        !shop.subscription_end_date
       ) {
         expired = true;
+      } else {
+        const endDate =
+          new Date(
+            shop.subscription_end_date
+          );
+
+        const todayDate =
+          new Date(
+            today.getFullYear(),
+            today.getMonth(),
+            today.getDate()
+          );
+
+        const endDateOnly =
+          new Date(
+            endDate.getFullYear(),
+            endDate.getMonth(),
+            endDate.getDate()
+          );
+
+        const difference =
+          endDateOnly.getTime() -
+          todayDate.getTime();
+
+        daysRemaining =
+          Math.max(
+            0,
+            Math.ceil(
+              difference /
+                (1000 *
+                  60 *
+                  60 *
+                  24)
+            )
+          );
+
+        if (
+          shop.subscription_status !==
+            "active" ||
+          daysRemaining <= 0
+        ) {
+          expired = true;
+        }
       }
+
+      let currentPlan = null;
+
+      if (shop.plan_id) {
+        currentPlan = {
+          id: shop.plan_id,
+          plan_name:
+            shop.plan_name,
+          price:
+            Number(shop.price),
+          duration_days:
+            shop.duration_days,
+          description:
+            shop.description,
+        };
+      }
+
+      return res.json({
+        success: true,
+
+        subscription: {
+          shop_id: shop.id,
+          shop_name:
+            shop.shop_name,
+
+          status: expired
+            ? "expired"
+            : shop.subscription_status,
+
+          expired,
+
+          end_date:
+            shop.subscription_end_date,
+
+          days_remaining:
+            daysRemaining,
+
+          current_plan:
+            currentPlan,
+        },
+
+        plans,
+      });
+    } catch (error) {
+      console.error(
+        "SUBSCRIPTION STATUS ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message:
+          "Failed to get subscription status",
+        error: error.message,
+      });
     }
-
-    // ---------------------------------------------------------
-    // CURRENT PLAN
-    // ---------------------------------------------------------
-
-    let currentPlan = null;
-
-    if (shop.plan_id) {
-      currentPlan = {
-        id: shop.plan_id,
-        plan_name: shop.plan_name,
-        price: Number(shop.price),
-        duration_days: shop.duration_days,
-        description: shop.description,
-      };
-    }
-
-    // ---------------------------------------------------------
-    // RESPONSE
-    // ---------------------------------------------------------
-
-    return res.json({
-      success: true,
-
-      subscription: {
-        shop_id: shop.id,
-        shop_name: shop.shop_name,
-
-        status: expired
-          ? "expired"
-          : shop.subscription_status,
-
-        expired,
-
-        end_date: shop.subscription_end_date,
-
-        days_remaining: daysRemaining,
-
-        current_plan: currentPlan,
-      },
-
-      plans,
-    });
-
-  } catch (error) {
-    console.error(
-      "SUBSCRIPTION STATUS ERROR:",
-      error
-    );
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed to get subscription status",
-      error: error.message,
-    });
   }
-});
+);
+
 // ======================================================
 // NOTIFICATIONS
 // ======================================================
 
-app.get("/notifications", verifyToken, async (req, res) => {
+app.get(
+  "/notifications",
+  verifyToken,
+  async (req, res) => {
 
-  if ((req.user.role || "").toLowerCase() !== "owner") {
-  return res.status(403).json({
-    success: false,
-    message: "Notifications are available only for owner",
-    unread_count: 0,
-    notifications: [],
-  });
-}
-  try {
-    const [rows] = await db.query(
-      `SELECT *
-      FROM notifications
-      WHERE shop_id = ?
-      ORDER BY id DESC
-      LIMIT 50`,
-      [req.user.shop_id]
-    );
+    if (
+      (req.user.role || "")
+        .toLowerCase() !==
+      "owner"
+    ) {
+      return res.status(403).json({
+        success: false,
+        message:
+          "Notifications are available only for owner",
+        unread_count: 0,
+        notifications: [],
+      });
+    }
 
-    const [countRows] = await db.query(
-      `SELECT COUNT(*) AS unread_count
-      FROM notifications
-      WHERE shop_id = ? AND is_read = 0`,
-      [req.user.shop_id]
-    );
+    try {
+      const [rows] =
+        await db.query(
+          `
+          SELECT *
+          FROM notifications
+          WHERE shop_id = ?
+          ORDER BY id DESC
+          LIMIT 50
+          `,
+          [req.user.shop_id]
+        );
 
-    res.json({
-      success: true,
-      unread_count: countRows[0].unread_count,
-      notifications: rows,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+      const [countRows] =
+        await db.query(
+          `
+          SELECT COUNT(*) AS unread_count
+          FROM notifications
+          WHERE shop_id = ?
+            AND is_read = 0
+          `,
+          [req.user.shop_id]
+        );
+
+      res.json({
+        success: true,
+        unread_count:
+          countRows[0]
+            .unread_count,
+        notifications:
+          rows,
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message,
+      });
+    }
   }
-});
+);
 
-app.put("/notifications/read-all", verifyToken, async (req, res) => {
-  try {
-    await db.query(
-      `UPDATE notifications
-      SET is_read = 1
-      WHERE shop_id = ?`,
-      [req.user.shop_id]
-    );
+app.put(
+  "/notifications/read-all",
+  verifyToken,
+  async (req, res) => {
+    try {
+      await db.query(
+        `
+        UPDATE notifications
+        SET is_read = 1
+        WHERE shop_id = ?
+        `,
+        [req.user.shop_id]
+      );
 
-    res.json({
-      success: true,
-      message: "Notifications marked as read",
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+      res.json({
+        success: true,
+        message:
+          "Notifications marked as read",
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message,
+      });
+    }
   }
-});
+);
 
 // ======================================================
 // LOGIN
@@ -1027,8 +1310,15 @@ app.put("/notifications/read-all", verifyToken, async (req, res) => {
 // SERVER
 // ======================================================
 
-const PORT = process.env.PORT || 5000;
+const PORT =
+  process.env.PORT || 5000;
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Server running on port ${PORT}`);
-});
+app.listen(
+  PORT,
+  "0.0.0.0",
+  () => {
+    console.log(
+      `Server running on port ${PORT}`
+    );
+  }
+);
