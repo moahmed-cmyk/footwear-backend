@@ -2,6 +2,7 @@ const db = require("../config/db");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
+require("../config/firebaseAdmin");
 const { getAuth } = require("firebase-admin/auth");
 /*
 |--------------------------------------------------------------------------
@@ -235,15 +236,16 @@ exports.googleOwnerLogin = async (req, res) => {
       email: email,
     });
 
-  } catch (error) {
-    console.error(
-      "GOOGLE OWNER LOGIN ERROR:",
-      error
-    );
+    } catch (error) {
+    console.error("GOOGLE OWNER LOGIN ERROR CODE:", error?.code);
+    console.error("GOOGLE OWNER LOGIN ERROR MESSAGE:", error?.message);
+    console.error("GOOGLE OWNER LOGIN ERROR FULL:", error);
 
     return res.status(401).json({
       success: false,
       message: "Google authentication failed",
+      error_code: error?.code || null,
+      error_message: error?.message || null,
     });
   }
 };
