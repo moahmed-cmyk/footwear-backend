@@ -109,10 +109,14 @@ router.post(
 */
 
 router.post(
+  "/google-owner-login",
+  authController.googleOwnerLogin
+);
+
+router.post(
   "/register-shop",
   authController.registerShop
 );
-
 /*
 |--------------------------------------------------------------------------
 | OWNER LOGIN

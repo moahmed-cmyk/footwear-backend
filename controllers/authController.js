@@ -2,7 +2,7 @@ const db = require("../config/db");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
-
+const { getAuth } = require("firebase-admin/auth");
 /*
 |--------------------------------------------------------------------------
 | HELPER FUNCTIONS
@@ -58,6 +58,195 @@ const createToken = (user) => {
   );
 };
 
+/*
+|--------------------------------------------------------------------------
+| GOOGLE OWNER LOGIN
+|--------------------------------------------------------------------------
+*/
+
+exports.googleOwnerLogin = async (req, res) => {
+  try {
+    const { idToken } = req.body;
+
+    if (!idToken) {
+      return res.status(400).json({
+        success: false,
+        message: "Google ID token is required",
+      });
+    }
+
+    // Verify Firebase ID token
+   const decodedToken = await getAuth().verifyIdToken(idToken);
+
+    const firebaseUid = decodedToken.uid;
+    const email = decodedToken.email || null;
+
+    if (!firebaseUid) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid Google account",
+      });
+    }
+
+    // Find existing OWNER using Firebase UID
+    const [users] = await db.query(
+      `
+      SELECT
+        id,
+        shop_id,
+        username,
+        name,
+        phone,
+        email,
+        firebase_uid,
+        role,
+        status
+      FROM users
+      WHERE firebase_uid = ?
+        AND role = 'owner'
+      LIMIT 1
+      `,
+      [firebaseUid]
+    );
+
+    const user = users[0];
+
+    /*
+    |--------------------------------------------------------------------------
+    | EXISTING OWNER
+    |--------------------------------------------------------------------------
+    */
+
+    if (user) {
+      if (user.status !== "active") {
+        return res.status(403).json({
+          success: false,
+          message: "This owner account is inactive",
+        });
+      }
+
+      // Get shop
+      const [shops] = await db.query(
+        `
+        SELECT
+          id,
+          shop_name,
+          owner_name,
+          phone,
+          address,
+          gst_number,
+          subscription_plan_id,
+          subscription_status,
+          subscription_end_date
+        FROM shops
+        WHERE id = ?
+        LIMIT 1
+        `,
+        [user.shop_id]
+      );
+
+      const shop = shops[0];
+
+      if (!shop) {
+        return res.status(404).json({
+          success: false,
+          message: "Shop not found",
+        });
+      }
+
+      // Subscription check
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      let subscriptionExpired = false;
+
+      if (shop.subscription_status !== "active") {
+        subscriptionExpired = true;
+      }
+
+      if (shop.subscription_end_date) {
+        const endDate = new Date(
+          shop.subscription_end_date
+        );
+
+        endDate.setHours(0, 0, 0, 0);
+
+        if (endDate < today) {
+          subscriptionExpired = true;
+        }
+      } else {
+        subscriptionExpired = true;
+      }
+
+      // Create existing NIFORA JWT
+      const token = createToken(user);
+
+      return res.json({
+        success: true,
+        is_new_user: false,
+        message: "Google login successful",
+
+        token,
+
+        subscription_expired: subscriptionExpired,
+
+        user: {
+          id: user.id,
+          shop_id: user.shop_id,
+          username: user.username,
+          name: user.name,
+          phone: user.phone,
+          email: user.email || email,
+          role: user.role,
+        },
+
+        shop: {
+          id: shop.id,
+          shop_name: shop.shop_name,
+          owner_name: shop.owner_name,
+          phone: shop.phone,
+          address: shop.address,
+          gst_number: shop.gst_number,
+          subscription_plan_id:
+            shop.subscription_plan_id,
+          subscription_status:
+            shop.subscription_status,
+          subscription_end_date:
+            shop.subscription_end_date,
+        },
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | NEW GOOGLE USER
+    |--------------------------------------------------------------------------
+    |
+    | IMPORTANT:
+    | Do NOT automatically create a shop.
+    |
+    */
+
+    return res.status(404).json({
+      success: false,
+      is_new_user: true,
+      message: "Google account is not registered",
+      firebase_uid: firebaseUid,
+      email: email,
+    });
+
+  } catch (error) {
+    console.error(
+      "GOOGLE OWNER LOGIN ERROR:",
+      error
+    );
+
+    return res.status(401).json({
+      success: false,
+      message: "Google authentication failed",
+    });
+  }
+};
 /*
 |--------------------------------------------------------------------------
 | SEND OTP
