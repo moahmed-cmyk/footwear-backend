@@ -1304,127 +1304,104 @@ exports.addStaff = async (req, res) => {
       });
     }
 
+    // ============================================================
+    // GET INPUT
+    // ============================================================
+
     const staffName = String(req.body.staff_name || "").trim();
-    const normalizedPhone = normalizePhone(req.body.phone);
+    const staffUsername = String(req.body.username || "").trim();
+    const staffPassword = String(req.body.password || "");
     const shopId = Number(req.user.shop_id);
 
     // ============================================================
     // VALIDATION
     // ============================================================
 
-    if (!staffName || !normalizedPhone) {
+    if (!staffName || !staffUsername || !staffPassword) {
       return res.status(400).json({
         success: false,
-        message: "Staff name and phone are required",
+        message: "Staff name, username and password are required",
       });
     }
 
-    if (!/^[6-9]\d{9}$/.test(normalizedPhone)) {
-      return res.status(400).json({
-        success: false,
-        message: "Enter a valid Indian mobile number",
-      });
-    }
-
-    if (!shopId) {
+    if (!shopId || !Number.isInteger(shopId) || shopId <= 0) {
       return res.status(400).json({
         success: false,
         message: "Invalid shop",
       });
     }
 
-    // ============================================================
-    // CHECK DUPLICATE STAFF
-    // ============================================================
-    // IMPORTANT:
-    // Check the SAME SHOP + SAME PHONE.
-    // No LIMIT 1 here.
-    // ============================================================
-
-    const [existingStaff] = await db.query(
-      `
-      SELECT
-        id,
-        shop_id,
-        name,
-        phone,
-        role,
-        status
-      FROM users
-      WHERE shop_id = ?
-        AND phone = ?
-        AND role = 'staff'
-      `,
-      [shopId, normalizedPhone]
-    );
-
-    if (existingStaff.length > 0) {
-      return res.status(409).json({
+    if (staffName.length > 100) {
+      return res.status(400).json({
         success: false,
-        message: "This staff member is already added to this shop",
+        message: "Staff name is too long",
       });
     }
 
-    // ============================================================
-    // CHECK PHONE ALREADY USED BY ANY ACCOUNT
-    // ============================================================
+    if (staffUsername.length < 3 || staffUsername.length > 50) {
+      return res.status(400).json({
+        success: false,
+        message: "Username must be between 3 and 50 characters",
+      });
+    }
 
-    const [existingAccount] = await db.query(
-      `
-      SELECT
-        id,
-        shop_id,
-        name,
-        phone,
-        role,
-        status
-      FROM users
-      WHERE phone = ?
-      `,
-      [normalizedPhone]
-    );
-
-    if (existingAccount.length > 0) {
-      const account = existingAccount[0];
-
-      if (account.role === "owner") {
-        return res.status(409).json({
-          success: false,
-          message:
-            "This mobile number is already linked to an owner account",
-        });
-      }
-
-      if (account.role === "staff") {
-        return res.status(409).json({
-          success: false,
-          message:
-            "This mobile number is already linked to a staff account",
-        });
-      }
-
-      return res.status(409).json({
+    if (!/^[a-zA-Z0-9._-]+$/.test(staffUsername)) {
+      return res.status(400).json({
         success: false,
         message:
-          "This mobile number is already linked to an account",
+          "Username can contain only letters, numbers, dot, underscore and hyphen",
+      });
+    }
+
+    if (staffPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: "Password must be at least 6 characters",
+      });
+    }
+
+    if (staffPassword.length > 100) {
+      return res.status(400).json({
+        success: false,
+        message: "Password is too long",
       });
     }
 
     // ============================================================
-    // USERNAME
+    // CHECK USERNAME
+    // ============================================================
+    // Username must be unique across NIFORA.
     // ============================================================
 
-    const staffUsername = normalizedPhone;
+    const [existingUsers] = await db.query(
+      `
+      SELECT
+        id,
+        shop_id,
+        username,
+        role,
+        status
+      FROM users
+      WHERE LOWER(username) = LOWER(?)
+      LIMIT 1
+      `,
+      [staffUsername]
+    );
+
+    if (existingUsers.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: "This username is already taken",
+      });
+    }
 
     // ============================================================
-    // RANDOM PASSWORD
+    // HASH PASSWORD
     // ============================================================
-
-    const randomPassword = generateRandomPassword();
 
     const hashedPassword = await bcrypt.hash(
-      randomPassword,
-      10
+      staffPassword,
+      12
     );
 
     // ============================================================
@@ -1441,8 +1418,19 @@ exports.addStaff = async (req, res) => {
       staffSequence[0].user_id
     );
 
+    if (!staffId) {
+      return res.status(500).json({
+        success: false,
+        message: "Failed to generate staff ID",
+      });
+    }
+
     // ============================================================
     // CREATE STAFF
+    // ============================================================
+    // IMPORTANT:
+    // shop_id comes ONLY from authenticated owner's JWT.
+    // status = active because we are using Option A.
     // ============================================================
 
     await db.query(
@@ -1458,7 +1446,7 @@ exports.addStaff = async (req, res) => {
         status,
         phone
       )
-      VALUES (?, ?, ?, ?, ?, 'staff', 'inactive', ?)
+      VALUES (?, ?, ?, ?, ?, 'staff', 'active', NULL)
       `,
       [
         staffId,
@@ -1466,78 +1454,28 @@ exports.addStaff = async (req, res) => {
         staffUsername,
         staffName,
         hashedPassword,
-        normalizedPhone,
       ]
     );
 
     // ============================================================
-    // CREATE STAFF INVITATION OTP
+    // SUCCESS
     // ============================================================
 
-    const otp = generateOtp();
-
-    const otpHash = await bcrypt.hash(
-      otp,
-      10
-    );
-
-    const expiresAt = new Date(
-      Date.now() + 5 * 60 * 1000
-    );
-
-    await db.query(
-      `
-      DELETE FROM otp_verifications
-      WHERE phone = ?
-        AND purpose = 'staff_invite'
-      `,
-      [normalizedPhone]
-    );
-
-    await db.query(
-      `
-      INSERT INTO otp_verifications
-      (
-        phone,
-        otp_hash,
-        purpose,
-        expires_at
-      )
-      VALUES (?, ?, 'staff_invite', ?)
-      `,
-      [
-        normalizedPhone,
-        otpHash,
-        expiresAt,
-      ]
-    );
-
-    // ============================================================
-    // DEVELOPMENT OTP
-    // ============================================================
-
-    console.log(
-      `NIFORA STAFF INVITE OTP | ${normalizedPhone} | ${otp}`
-    );
-
-    const response = {
+    return res.status(201).json({
       success: true,
-      message:
-        "Staff created. OTP sent to staff mobile number",
-      staff_id: staffId,
-    };
-
-    if (process.env.NODE_ENV !== "production") {
-      response.devOtp = otp;
-    }
-
-    return res.status(201).json(response);
+      message: "Staff created successfully",
+      staff: {
+        id: staffId,
+        shop_id: shopId,
+        username: staffUsername,
+        name: staffName,
+        role: "staff",
+        status: "active",
+      },
+    });
 
   } catch (error) {
-    console.error(
-      "ADD STAFF ERROR:",
-      error
-    );
+    console.error("ADD STAFF ERROR:", error);
 
     return res.status(500).json({
       success: false,
@@ -2384,4 +2322,200 @@ exports.registerGoogleShop = async (req, res) => {
       connection.release();
     }
   }
+
+  /*
+|--------------------------------------------------------------------------
+| STAFF LOGIN - USERNAME + PASSWORD
+|--------------------------------------------------------------------------
+*/
+
+exports.staffLogin = async (req, res) => {
+  try {
+    // ============================================================
+    // GET INPUT
+    // ============================================================
+
+    const username = String(req.body.username || "").trim();
+    const password = String(req.body.password || "");
+
+    // ============================================================
+    // VALIDATION
+    // ============================================================
+
+    if (!username || !password) {
+      return res.status(400).json({
+        success: false,
+        message: "Username and password are required",
+      });
+    }
+
+    // ============================================================
+    // FIND STAFF
+    // ============================================================
+
+    const [users] = await db.query(
+      `
+      SELECT
+        id,
+        shop_id,
+        username,
+        name,
+        password,
+        phone,
+        role,
+        status
+      FROM users
+      WHERE LOWER(username) = LOWER(?)
+        AND role = 'staff'
+      LIMIT 1
+      `,
+      [username]
+    );
+
+    if (users.length === 0) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid username or password",
+      });
+    }
+
+    const staff = users[0];
+
+    // ============================================================
+    // CHECK STATUS
+    // ============================================================
+
+    if (staff.status !== "active") {
+      return res.status(403).json({
+        success: false,
+        message: "Staff account is inactive",
+      });
+    }
+
+    // ============================================================
+    // CHECK PASSWORD
+    // ============================================================
+
+    const passwordValid = await bcrypt.compare(
+      password,
+      staff.password
+    );
+
+    if (!passwordValid) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid username or password",
+      });
+    }
+
+    // ============================================================
+    // CHECK SHOP
+    // ============================================================
+
+    const [shops] = await db.query(
+      `
+      SELECT
+        id,
+        shop_name,
+        owner_name,
+        phone,
+        address,
+        gst_number,
+        subscription_plan_id,
+        subscription_status,
+        subscription_end_date
+      FROM shops
+      WHERE id = ?
+      LIMIT 1
+      `,
+      [staff.shop_id]
+    );
+
+    const shop = shops[0];
+
+    if (!shop) {
+      return res.status(404).json({
+        success: false,
+        message: "Shop not found",
+      });
+    }
+
+    // ============================================================
+    // CHECK SUBSCRIPTION
+    // ============================================================
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    let subscriptionExpired = false;
+
+    if (shop.subscription_status !== "active") {
+      subscriptionExpired = true;
+    }
+
+    if (shop.subscription_end_date) {
+      const endDate = new Date(shop.subscription_end_date);
+      endDate.setHours(0, 0, 0, 0);
+
+      if (endDate < today) {
+        subscriptionExpired = true;
+      }
+    } else {
+      subscriptionExpired = true;
+    }
+
+    // ============================================================
+    // CREATE NIFORA JWT
+    // ============================================================
+
+    const token = createToken({
+      id: staff.id,
+      shop_id: staff.shop_id,
+      role: "staff",
+    });
+
+    // ============================================================
+    // SUCCESS
+    // ============================================================
+
+    return res.json({
+      success: true,
+      message: "Staff login successful",
+
+      token,
+
+      subscription_expired: subscriptionExpired,
+
+      user: {
+        id: staff.id,
+        shop_id: staff.shop_id,
+        username: staff.username,
+        name: staff.name,
+        phone: staff.phone,
+        role: "staff",
+      },
+
+      shop: {
+        id: shop.id,
+        shop_name: shop.shop_name,
+        owner_name: shop.owner_name,
+        phone: shop.phone,
+        address: shop.address,
+        gst_number: shop.gst_number,
+        subscription_plan_id: shop.subscription_plan_id,
+        subscription_status: shop.subscription_status,
+        subscription_end_date: shop.subscription_end_date,
+      },
+    });
+
+  } catch (error) {
+    console.error("STAFF LOGIN ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Staff login failed",
+      error: error.message,
+    });
+  }
+};
 };

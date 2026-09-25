@@ -180,28 +180,13 @@ router.put(
   permissionController.updateStaffPermissions
 );
 
-/*
-|--------------------------------------------------------------------------
-| STAFF LOGIN
-|--------------------------------------------------------------------------
-*/
-
-router.post(
-  "/send-staff-login-otp",
-  (req, res, next) => {
-    req.body.purpose = "staff_login";
-    next();
-  },
-  authController.sendOtp
-);
+// ============================================================
+// STAFF LOGIN - USERNAME + PASSWORD
+// ============================================================
 
 router.post(
   "/staff-login",
-  (req, res, next) => {
-    req.body.purpose = "staff_login";
-    next();
-  },
-  authController.verifyOtp
+  authController.staffLogin
 );
 
 /*
