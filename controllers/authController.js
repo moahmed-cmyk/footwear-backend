@@ -1967,3 +1967,421 @@ exports.changeStaffName = async (
     });
   }
 };
+
+
+/*
+|--------------------------------------------------------------------------
+| REGISTER SHOP WITH GOOGLE
+|--------------------------------------------------------------------------
+|
+| New Google owner:
+| Google Login
+|      ↓
+| Firebase ID Token
+|      ↓
+| Verify Firebase token
+|      ↓
+| Create Shop + Owner
+|      ↓
+| Create NIFORA JWT
+|
+*/
+
+exports.registerGoogleShop = async (req, res) => {
+  let connection;
+
+  try {
+    const {
+      idToken,
+      shop_name,
+      owner_name,
+      address,
+      gst_number,
+    } = req.body;
+
+    // ============================================================
+    // VALIDATION
+    // ============================================================
+
+    if (!idToken) {
+      return res.status(400).json({
+        success: false,
+        message: "Google ID token is required",
+      });
+    }
+
+    if (!shop_name || !shop_name.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Shop name is required",
+      });
+    }
+
+    if (!owner_name || !owner_name.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Owner name is required",
+      });
+    }
+
+    // ============================================================
+    // VERIFY FIREBASE ID TOKEN
+    // ============================================================
+
+    const decodedToken =
+      await getAuth().verifyIdToken(idToken);
+
+    const firebaseUid = decodedToken.uid;
+    const email = decodedToken.email || null;
+    const googleName =
+      decodedToken.name || owner_name.trim();
+
+    if (!firebaseUid) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid Google account",
+      });
+    }
+
+    // ============================================================
+    // CHECK IF GOOGLE ACCOUNT ALREADY EXISTS
+    // ============================================================
+
+    const [existingUsers] = await db.query(
+      `
+      SELECT
+        id,
+        shop_id,
+        username,
+        name,
+        phone,
+        email,
+        firebase_uid,
+        role,
+        status
+      FROM users
+      WHERE firebase_uid = ?
+        AND role = 'owner'
+      LIMIT 1
+      `,
+      [firebaseUid]
+    );
+
+    if (existingUsers.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message:
+          "This Google account is already registered",
+        is_new_user: false,
+      });
+    }
+
+    // ============================================================
+    // DATABASE TRANSACTION
+    // ============================================================
+
+    connection = await db.getConnection();
+
+    await connection.beginTransaction();
+
+    // ============================================================
+    // GET ACTIVE FREE TRIAL PLAN
+    // ============================================================
+
+    const [freeTrialPlans] =
+      await connection.query(
+        `
+        SELECT
+          id,
+          duration_days
+        FROM subscription_plans
+        WHERE plan_name = 'Free Trial'
+          AND status = 'active'
+        ORDER BY id ASC
+        LIMIT 1
+        `
+      );
+
+    if (!freeTrialPlans.length) {
+      throw new Error(
+        "Active Free Trial subscription plan not found"
+      );
+    }
+
+    const freeTrialPlanId =
+      Number(freeTrialPlans[0].id);
+
+    const freeTrialDays =
+      Number(
+        freeTrialPlans[0].duration_days
+      );
+
+    if (
+      !Number.isInteger(freeTrialPlanId) ||
+      !Number.isInteger(freeTrialDays) ||
+      freeTrialDays <= 0
+    ) {
+      throw new Error(
+        "Invalid Free Trial plan configuration"
+      );
+    }
+
+    // ============================================================
+    // GET SHOP ID FROM TIDB SEQUENCE
+    // ============================================================
+
+    const [shopSequence] =
+      await connection.query(
+        `
+        SELECT NEXT VALUE FOR shops_id_seq AS shop_id
+        `
+      );
+
+    const shopId =
+      Number(shopSequence[0].shop_id);
+
+    if (!shopId) {
+      throw new Error(
+        "Failed to generate shop ID"
+      );
+    }
+
+    // ============================================================
+    // CREATE SHOP
+    // ============================================================
+    //
+    // Google registration does NOT require mobile number.
+    //
+    // phone = NULL
+    //
+    // IMPORTANT:
+    // Your shops.phone column must allow NULL.
+    //
+    // ============================================================
+
+    await connection.query(
+      `
+      INSERT INTO shops
+      (
+        id,
+        shop_name,
+        owner_name,
+        phone,
+        address,
+        gst_number,
+        subscription_plan_id,
+        subscription_status,
+        subscription_end_date
+      )
+      VALUES (
+        ?, ?, ?, NULL, ?, ?, ?,
+        'active',
+        DATE_ADD(
+          CURRENT_DATE,
+          INTERVAL ${freeTrialDays} DAY
+        )
+      )
+      `,
+      [
+        shopId,
+        shop_name.trim(),
+        owner_name.trim(),
+        address?.trim() || null,
+        gst_number?.trim() || null,
+        freeTrialPlanId,
+      ]
+    );
+
+    // ============================================================
+    // GET USER ID FROM TIDB SEQUENCE
+    // ============================================================
+
+    const [userSequence] =
+      await connection.query(
+        `
+        SELECT NEXT VALUE FOR users_id_seq AS user_id
+        `
+      );
+
+    const userId =
+      Number(userSequence[0].user_id);
+
+    if (!userId) {
+      throw new Error(
+        "Failed to generate user ID"
+      );
+    }
+
+    // ============================================================
+    // GOOGLE USERNAME
+    // ============================================================
+    //
+    // Google account is identified by firebase_uid.
+    //
+    // Email is NOT used as identity.
+    //
+    // ============================================================
+
+    const ownerUsername =
+      email && email.trim()
+        ? email.trim()
+        : `google_${firebaseUid.substring(0, 12)}`;
+
+    // ============================================================
+    // RANDOM PASSWORD
+    // ============================================================
+    //
+    // Google users don't use this password for login.
+    // It exists only because users.password is NOT NULL.
+    //
+    // ============================================================
+
+    const randomPassword =
+      generateRandomPassword();
+
+    const hashedPassword =
+      await bcrypt.hash(
+        randomPassword,
+        10
+      );
+
+    // ============================================================
+    // CREATE OWNER USER
+    // ============================================================
+
+    await connection.query(
+      `
+      INSERT INTO users
+      (
+        id,
+        shop_id,
+        username,
+        name,
+        password,
+        role,
+        status,
+        phone,
+        email,
+        firebase_uid
+      )
+      VALUES (
+        ?, ?, ?, ?, ?,
+        'owner',
+        'active',
+        NULL,
+        ?,
+        ?
+      )
+      `,
+      [
+        userId,
+        shopId,
+        ownerUsername,
+        googleName,
+        hashedPassword,
+        email,
+        firebaseUid,
+      ]
+    );
+
+    // ============================================================
+    // COMMIT
+    // ============================================================
+
+    await connection.commit();
+
+    // ============================================================
+    // CREATE NIFORA JWT
+    // ============================================================
+
+    const user = {
+      id: userId,
+      shop_id: shopId,
+      role: "owner",
+    };
+
+    const token = createToken(user);
+
+    // ============================================================
+    // RESPONSE
+    // ============================================================
+
+    return res.status(201).json({
+      success: true,
+      is_new_user: true,
+      message:
+        "Google shop registered successfully",
+
+      token,
+
+      user: {
+        id: userId,
+        shop_id: shopId,
+        username: ownerUsername,
+        name: googleName,
+        phone: null,
+        email: email,
+        firebase_uid: firebaseUid,
+        role: "owner",
+      },
+
+      shop: {
+        id: shopId,
+        shop_name: shop_name.trim(),
+        owner_name: owner_name.trim(),
+        phone: null,
+        address:
+          address?.trim() || null,
+        gst_number:
+          gst_number?.trim() || null,
+        subscription_plan_id:
+          freeTrialPlanId,
+        subscription_status: "active",
+      },
+    });
+  } catch (error) {
+    // ============================================================
+    // ROLLBACK
+    // ============================================================
+
+    if (connection) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error(
+          "GOOGLE REGISTER ROLLBACK ERROR:",
+          rollbackError
+        );
+      }
+    }
+
+    console.error(
+      "GOOGLE SHOP REGISTRATION ERROR CODE:",
+      error?.code
+    );
+
+    console.error(
+      "GOOGLE SHOP REGISTRATION ERROR MESSAGE:",
+      error?.message
+    );
+
+    console.error(
+      "GOOGLE SHOP REGISTRATION ERROR FULL:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Google shop registration failed",
+      error_code:
+        error?.code || null,
+      error_message:
+        error?.message || null,
+    });
+  } finally {
+    if (connection) {
+      connection.release();
+    }
+  }
+};

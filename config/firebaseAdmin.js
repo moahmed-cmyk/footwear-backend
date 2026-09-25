@@ -1,32 +1,49 @@
-const { initializeApp, cert, getApps } = require("firebase-admin/app");
+const {
+  initializeApp,
+  cert,
+  getApps,
+} = require("firebase-admin/app");
+
+const path = require("path");
+const fs = require("fs");
 
 let serviceAccount;
 
-if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-  try {
+try {
+  // 1. Render / Production
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
     serviceAccount = JSON.parse(
       process.env.FIREBASE_SERVICE_ACCOUNT_JSON
     );
-  } catch (error) {
-    console.error(
-      "FIREBASE SERVICE ACCOUNT JSON ERROR:",
-      error.message
-    );
-    throw error;
   }
-} else {
-  throw new Error(
-    "FIREBASE_SERVICE_ACCOUNT_JSON environment variable is missing"
-  );
+
+  // 2. Local development
+  else {
+    const serviceAccountPath = path.join(
+      __dirname,
+      "..",
+      "firebase-service-account.json"
+    );
+
+    if (!fs.existsSync(serviceAccountPath)) {
+      throw new Error(
+        "Firebase service account file not found: " +
+          serviceAccountPath
+      );
+    }
+
+    serviceAccount = require(serviceAccountPath);
+  }
+
+  if (getApps().length === 0) {
+    initializeApp({
+      credential: cert(serviceAccount),
+    });
+  }
+} catch (error) {
+  console.error("FIREBASE ADMIN INITIALIZATION ERROR:");
+  console.error(error.message);
+  throw error;
 }
 
-const firebaseApp =
-  getApps().length === 0
-    ? initializeApp({
-        credential: cert(serviceAccount),
-      })
-    : getApps()[0];
-
-console.log("Firebase Admin initialized successfully");
-
-module.exports = firebaseApp;
+module.exports = getApps()[0];

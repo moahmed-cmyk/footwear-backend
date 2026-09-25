@@ -114,6 +114,11 @@ router.post(
 );
 
 router.post(
+  "/register-google-shop",
+  authController.registerGoogleShop
+);
+
+router.post(
   "/register-shop",
   authController.registerShop
 );
