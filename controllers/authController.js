@@ -2317,13 +2317,14 @@ exports.registerGoogleShop = async (req, res) => {
       error_message:
         error?.message || null,
     });
-  } finally {
+     } finally {
     if (connection) {
       connection.release();
     }
   }
+};
 
-  /*
+/*
 |--------------------------------------------------------------------------
 | STAFF LOGIN - USERNAME + PASSWORD
 |--------------------------------------------------------------------------
@@ -2382,7 +2383,7 @@ exports.staffLogin = async (req, res) => {
     const staff = users[0];
 
     // ============================================================
-    // CHECK STATUS
+    // CHECK STAFF STATUS
     // ============================================================
 
     if (staff.status !== "active") {
@@ -2409,7 +2410,7 @@ exports.staffLogin = async (req, res) => {
     }
 
     // ============================================================
-    // CHECK SHOP
+    // GET SHOP
     // ============================================================
 
     const [shops] = await db.query(
@@ -2465,7 +2466,7 @@ exports.staffLogin = async (req, res) => {
     }
 
     // ============================================================
-    // CREATE NIFORA JWT
+    // CREATE JWT
     // ============================================================
 
     const token = createToken({
@@ -2517,5 +2518,4 @@ exports.staffLogin = async (req, res) => {
       error: error.message,
     });
   }
-};
 };
