@@ -213,6 +213,15 @@ router.put(
   requirePermission("staff_management"),
   authController.changeStaffName
 );
+
+// Owner resets staff password
+router.put(
+  "/staff/:id/password",
+  verifyToken,
+  checkSubscription,
+  requirePermission("staff_management"),
+  authController.resetStaffPassword
+);
 // Staff verifies invitation OTP
 router.post(
   "/verify-staff",

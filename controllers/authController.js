@@ -1729,6 +1729,188 @@ exports.verifyStaff = async (
 
 /*
 |--------------------------------------------------------------------------
+| RESET STAFF PASSWORD
+|--------------------------------------------------------------------------
+|
+| Only OWNER can reset a staff password.
+| Staff must belong to the owner's shop.
+|
+*/
+
+exports.resetStaffPassword = async (req, res) => {
+  try {
+    // ============================================================
+    // LOGGED-IN OWNER
+    // ============================================================
+
+    const ownerShopId = Number(req.user.shop_id);
+
+    const ownerRole = String(req.user.role || "")
+      .toLowerCase();
+
+    // ============================================================
+    // OWNER ONLY
+    // ============================================================
+
+    if (ownerRole !== "owner") {
+      return res.status(403).json({
+        success: false,
+        message: "Only owner can reset staff password",
+      });
+    }
+
+    // ============================================================
+    // STAFF ID
+    // ============================================================
+
+    const staffId = Number(req.params.id);
+
+    // ============================================================
+    // NEW PASSWORD
+    // ============================================================
+
+    const newPassword = String(
+      req.body.password || ""
+    );
+
+    // ============================================================
+    // VALIDATE STAFF ID
+    // ============================================================
+
+    if (
+      !Number.isInteger(staffId) ||
+      staffId <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid staff ID",
+      });
+    }
+
+    // ============================================================
+    // VALIDATE SHOP
+    // ============================================================
+
+    if (
+      !Number.isInteger(ownerShopId) ||
+      ownerShopId <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid shop",
+      });
+    }
+
+    // ============================================================
+    // VALIDATE PASSWORD
+    // ============================================================
+
+    if (!newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: "New password is required",
+      });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: "Password must be at least 6 characters",
+      });
+    }
+
+    if (newPassword.length > 100) {
+      return res.status(400).json({
+        success: false,
+        message: "Password is too long",
+      });
+    }
+
+    // ============================================================
+    // CHECK STAFF BELONGS TO OWNER SHOP
+    // ============================================================
+
+    const [staffRows] = await db.query(
+      `
+      SELECT
+        id,
+        shop_id,
+        username,
+        role,
+        status
+      FROM users
+      WHERE id = ?
+        AND shop_id = ?
+        AND role = 'staff'
+      LIMIT 1
+      `,
+      [
+        staffId,
+        ownerShopId,
+      ]
+    );
+
+    if (staffRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Staff not found",
+      });
+    }
+
+    // ============================================================
+    // HASH NEW PASSWORD
+    // ============================================================
+
+    const hashedPassword = await bcrypt.hash(
+      newPassword,
+      12
+    );
+
+    // ============================================================
+    // UPDATE PASSWORD
+    // ============================================================
+
+    await db.query(
+      `
+      UPDATE users
+      SET password = ?
+      WHERE id = ?
+        AND shop_id = ?
+        AND role = 'staff'
+      `,
+      [
+        hashedPassword,
+        staffId,
+        ownerShopId,
+      ]
+    );
+
+    // ============================================================
+    // SUCCESS
+    // ============================================================
+
+    return res.status(200).json({
+      success: true,
+      message: "Staff password reset successfully",
+    });
+
+  } catch (error) {
+    console.error(
+      "RESET STAFF PASSWORD ERROR:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to reset staff password",
+      error: error.message,
+    });
+  }
+};
+
+
+/*
+|--------------------------------------------------------------------------
 | CHANGE STAFF NAME
 |--------------------------------------------------------------------------
 */
