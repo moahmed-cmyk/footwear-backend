@@ -32,6 +32,214 @@ app.use("/", authRoutes);
 app.use("/", subscriptionRoutes);
 
 // ======================================================
+// SUBSCRIPTION STATUS
+// ======================================================
+
+app.get(
+  "/subscription-status",
+  verifyToken,
+  async (req, res) => {
+    console.log(
+      "SUBSCRIPTION USER:",
+      req.user
+    );
+
+    try {
+      const shopId =
+        req.user.shop_id;
+
+      const [shopRows] =
+        await db.query(
+          `
+          SELECT
+            s.id,
+            s.shop_name,
+            s.subscription_status,
+            s.subscription_end_date,
+
+            p.id AS plan_id,
+            p.plan_name,
+            p.price,
+            p.duration_days,
+            p.description
+
+          FROM shops s
+
+          LEFT JOIN subscription_plans p
+            ON p.id =
+              s.subscription_plan_id
+
+          WHERE s.id = ?
+          LIMIT 1
+          `,
+          [shopId]
+        );
+
+      console.log(
+        "SUBSCRIPTION CHECK DB:",
+        shopRows
+      );
+
+      if (shopRows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Shop not found",
+        });
+      }
+
+      const shop =
+        shopRows[0];
+
+      const [plans] =
+        await db.query(
+          `
+          SELECT
+            p.id,
+            p.plan_name,
+            p.price,
+            p.duration_days,
+            p.description,
+            p.status
+
+          FROM subscription_plans p
+
+          INNER JOIN shops s
+            ON s.id = ?
+
+          WHERE p.status = 'active'
+
+          AND (
+            p.plan_name <> 'Free Trial'
+
+            OR (
+              p.id = 3
+              AND s.subscription_plan_id = 3
+              AND s.subscription_status = 'active'
+              AND s.subscription_end_date >= CURDATE()
+            )
+          )
+
+          ORDER BY p.price ASC
+          `,
+          [shopId]
+        );
+
+      const today =
+        new Date();
+
+      let expired = false;
+      let daysRemaining = 0;
+
+      if (
+        !shop.subscription_end_date
+      ) {
+        expired = true;
+      } else {
+        const endDate =
+          new Date(
+            shop.subscription_end_date
+          );
+
+        const todayDate =
+          new Date(
+            today.getFullYear(),
+            today.getMonth(),
+            today.getDate()
+          );
+
+        const endDateOnly =
+          new Date(
+            endDate.getFullYear(),
+            endDate.getMonth(),
+            endDate.getDate()
+          );
+
+        const difference =
+          endDateOnly.getTime() -
+          todayDate.getTime();
+
+        daysRemaining =
+          Math.max(
+            0,
+            Math.ceil(
+              difference /
+                (1000 *
+                  60 *
+                  60 *
+                  24)
+            )
+          );
+
+        if (
+          shop.subscription_status !==
+            "active" ||
+          daysRemaining <= 0
+        ) {
+          expired = true;
+        }
+      }
+
+      let currentPlan = null;
+
+      if (shop.plan_id) {
+        currentPlan = {
+          id: shop.plan_id,
+          plan_name:
+            shop.plan_name,
+          price:
+            Number(shop.price),
+          duration_days:
+            shop.duration_days,
+          description:
+            shop.description,
+        };
+      }
+
+      return res.json({
+        success: true,
+
+        subscription: {
+          shop_id: shop.id,
+          shop_name:
+            shop.shop_name,
+
+          status: expired
+            ? "expired"
+            : shop.subscription_status,
+
+          expired,
+
+          end_date:
+            shop.subscription_end_date,
+
+          days_remaining:
+            daysRemaining,
+
+          current_plan:
+            currentPlan,
+        },
+
+        plans,
+      });
+    } catch (error) {
+      console.error(
+        "SUBSCRIPTION STATUS ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message:
+          "Failed to get subscription status",
+        error: error.message,
+      });
+    }
+  }
+);
+
+
+// ======================================================
 // SUBSCRIPTION PROTECTED BUSINESS ROUTES
 // ======================================================
 
@@ -995,216 +1203,6 @@ app.get(
     } catch (error) {
       res.status(500).json({
         success: false,
-        error: error.message,
-      });
-    }
-  }
-);
-
-// ======================================================
-// SUBSCRIPTION STATUS
-// ======================================================
-
-app.get(
-  "/subscription-status",
-  verifyToken,
-  async (req, res) => {
-
-    console.log("🔥 SUBSCRIPTION STATUS ROUTE HIT 🔥");
-    console.log("USER:", req.user);
-    console.log(
-      "SUBSCRIPTION USER:",
-      req.user
-    );
-
-    try {
-      const shopId =
-        req.user.shop_id;
-
-      const [shopRows] =
-        await db.query(
-          `
-          SELECT
-            s.id,
-            s.shop_name,
-            s.subscription_status,
-            s.subscription_end_date,
-
-            p.id AS plan_id,
-            p.plan_name,
-            p.price,
-            p.duration_days,
-            p.description
-
-          FROM shops s
-
-          LEFT JOIN subscription_plans p
-            ON p.id =
-              s.subscription_plan_id
-
-          WHERE s.id = ?
-          LIMIT 1
-          `,
-          [shopId]
-        );
-
-      console.log(
-        "SUBSCRIPTION CHECK DB:",
-        shopRows
-      );
-
-      if (shopRows.length === 0) {
-        return res.status(404).json({
-          success: false,
-          message:
-            "Shop not found",
-        });
-      }
-
-      const shop =
-        shopRows[0];
-
-      const [plans] =
-        await db.query(
-          `
-          SELECT
-            p.id,
-            p.plan_name,
-            p.price,
-            p.duration_days,
-            p.description,
-            p.status
-
-          FROM subscription_plans p
-
-          INNER JOIN shops s
-            ON s.id = ?
-
-          WHERE p.status = 'active'
-
-          AND (
-            p.plan_name <> 'Free Trial'
-
-            OR (
-              p.id = 3
-              AND s.subscription_plan_id = 3
-              AND s.subscription_status = 'active'
-              AND s.subscription_end_date >= CURDATE()
-            )
-          )
-
-          ORDER BY p.price ASC
-          `,
-          [shopId]
-        );
-
-      const today =
-        new Date();
-
-      let expired = false;
-      let daysRemaining = 0;
-
-      if (
-        !shop.subscription_end_date
-      ) {
-        expired = true;
-      } else {
-        const endDate =
-          new Date(
-            shop.subscription_end_date
-          );
-
-        const todayDate =
-          new Date(
-            today.getFullYear(),
-            today.getMonth(),
-            today.getDate()
-          );
-
-        const endDateOnly =
-          new Date(
-            endDate.getFullYear(),
-            endDate.getMonth(),
-            endDate.getDate()
-          );
-
-        const difference =
-          endDateOnly.getTime() -
-          todayDate.getTime();
-
-        daysRemaining =
-          Math.max(
-            0,
-            Math.ceil(
-              difference /
-                (1000 *
-                  60 *
-                  60 *
-                  24)
-            )
-          );
-
-        if (
-          shop.subscription_status !==
-            "active" ||
-          daysRemaining <= 0
-        ) {
-          expired = true;
-        }
-      }
-
-      let currentPlan = null;
-
-      if (shop.plan_id) {
-        currentPlan = {
-          id: shop.plan_id,
-          plan_name:
-            shop.plan_name,
-          price:
-            Number(shop.price),
-          duration_days:
-            shop.duration_days,
-          description:
-            shop.description,
-        };
-      }
-
-      return res.json({
-        success: true,
-
-        subscription: {
-          shop_id: shop.id,
-          shop_name:
-            shop.shop_name,
-
-          status: expired
-            ? "expired"
-            : shop.subscription_status,
-
-          expired,
-
-          end_date:
-            shop.subscription_end_date,
-
-          days_remaining:
-            daysRemaining,
-
-          current_plan:
-            currentPlan,
-        },
-
-        plans,
-      });
-    } catch (error) {
-      console.error(
-        "SUBSCRIPTION STATUS ERROR:",
-        error
-      );
-
-      return res.status(500).json({
-        success: false,
-        message:
-          "Failed to get subscription status",
         error: error.message,
       });
     }
