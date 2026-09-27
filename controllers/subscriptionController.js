@@ -21,8 +21,7 @@ exports.createSubscriptionOrder = async (req, res) => {
 // FREE TRIAL SECURITY
 // Free Trial can NEVER be purchased/activated again
 // ======================================================
-
-if (Number(planId) === 3) {
+if (Number(plan_id) === 3) {
   return res.status(403).json({
     success: false,
     message: "Free Trial is available only for first-time registration.",
