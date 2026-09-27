@@ -1009,6 +1009,9 @@ app.get(
   "/subscription-status",
   verifyToken,
   async (req, res) => {
+
+    console.log("🔥 SUBSCRIPTION STATUS ROUTE HIT 🔥");
+    console.log("USER:", req.user);
     console.log(
       "SUBSCRIPTION USER:",
       req.user
