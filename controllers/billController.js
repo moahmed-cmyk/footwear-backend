@@ -9,12 +9,14 @@ exports.createBill = async (req, res) => {
 
   try {
     await connection.beginTransaction();
-const shop_id = req.user.shop_id;
-const created_by = req.user.user_id;
 
-const role = (req.user.role || "")
-  .toString()
-  .toLowerCase();
+    const shop_id = req.user.shop_id;
+    const created_by = req.user.user_id;
+
+    const role = (req.user.role || "")
+      .toString()
+      .toLowerCase();
+
     const {
       customer_name,
       discount,
@@ -23,6 +25,10 @@ const role = (req.user.role || "")
       upi_amount,
       items,
     } = req.body;
+
+    // ----------------------------------------------------------
+    // VALIDATE ITEMS
+    // ----------------------------------------------------------
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       await connection.rollback();
@@ -33,12 +39,12 @@ const role = (req.user.role || "")
       });
     }
 
-    let grandTotal = 0;
-    let totalProfit = 0;
-
     // ----------------------------------------------------------
     // CALCULATE BILL TOTAL
     // ----------------------------------------------------------
+
+    let grandTotal = 0;
+    let totalProfit = 0;
 
     for (const item of items) {
       const quantity = Number(item.quantity || 0);
@@ -53,18 +59,22 @@ const role = (req.user.role || "")
 
     const discountAmount = Number(discount || 0);
 
-    let finalTotal = grandTotal - discountAmount;
+    let finalTotal =
+      grandTotal - discountAmount;
 
     if (finalTotal < 0) {
       finalTotal = 0;
     }
 
     // ----------------------------------------------------------
-    // PAYMENT AMOUNTS
+    // PAYMENT
     // ----------------------------------------------------------
 
-    let cashAmount = Number(cash_amount || 0);
-    let upiAmount = Number(upi_amount || 0);
+    let cashAmount =
+      Number(cash_amount || 0);
+
+    let upiAmount =
+      Number(upi_amount || 0);
 
     if (cashAmount < 0) {
       cashAmount = 0;
@@ -75,9 +85,11 @@ const role = (req.user.role || "")
     }
 
     const normalizedPaymentType =
-      (payment_type || "cash").toString().toLowerCase();
+      (payment_type || "cash")
+        .toString()
+        .toLowerCase();
 
-    // Cash
+    // CASH
     if (normalizedPaymentType === "cash") {
       cashAmount = finalTotal;
       upiAmount = 0;
@@ -89,11 +101,14 @@ const role = (req.user.role || "")
       upiAmount = finalTotal;
     }
 
-    // Split
+    // SPLIT
     else if (normalizedPaymentType === "split") {
-      const totalPaid = cashAmount + upiAmount;
+      const totalPaid =
+        cashAmount + upiAmount;
 
-      if (Math.abs(totalPaid - finalTotal) > 0.01) {
+      if (
+        Math.abs(totalPaid - finalTotal) > 0.01
+      ) {
         await connection.rollback();
 
         return res.status(400).json({
@@ -104,17 +119,31 @@ const role = (req.user.role || "")
       }
     }
 
-    // ----------------------------------------------------------
-    // GENERATE BILL ID
-    // ----------------------------------------------------------
-    // bills.id is the PRIMARY KEY.
-    // TiDB sequence is used for unique bill IDs.
-    // DO NOT use MAX(id) + 1.
-    // ----------------------------------------------------------
+    // INVALID PAYMENT
+    else {
+      await connection.rollback();
 
-    const [sequenceRows] = await connection.query(
-      `SELECT NEXTVAL(bills_id_seq) AS id`
-    );
+      return res.status(400).json({
+        success: false,
+        message: "Invalid payment type",
+      });
+    }
+
+    // ==========================================================
+    // GENERATE INTERNAL DATABASE ID
+    // ==========================================================
+    //
+    // bills.id is ONLY internal database ID.
+    // It is NOT the customer Bill Number.
+    //
+    // TiDB sequence can jump. That is okay.
+    //
+    // ==========================================================
+
+    const [sequenceRows] =
+      await connection.query(
+        `SELECT NEXTVAL(bills_id_seq) AS id`
+      );
 
     const billId = Number(
       sequenceRows[0]?.id || 0
@@ -125,18 +154,89 @@ const role = (req.user.role || "")
 
       return res.status(500).json({
         success: false,
-        message: "Failed to generate bill ID",
+        message: "Failed to generate internal bill ID",
       });
     }
 
-    // ----------------------------------------------------------
+    // ==========================================================
+    // GENERATE CUSTOMER BILL NUMBER
+    // ==========================================================
+    //
+    // Example:
+    // 48 -> 49 -> 50 -> 51
+    //
+    // Each shop has its own counter.
+    //
+    // ==========================================================
+
+    const [counterRows] =
+      await connection.query(
+        `
+        SELECT last_bill_number
+        FROM bill_counters
+        WHERE shop_id = ?
+        FOR UPDATE
+        `,
+        [shop_id]
+      );
+
+    let billNumber = 0;
+
+    if (counterRows.length === 0) {
+      billNumber = 1;
+
+      await connection.query(
+        `
+        INSERT INTO bill_counters
+        (
+          shop_id,
+          last_bill_number
+        )
+        VALUES (?, ?)
+        `,
+        [
+          shop_id,
+          billNumber,
+        ]
+      );
+    } else {
+      billNumber =
+        Number(
+          counterRows[0].last_bill_number || 0
+        ) + 1;
+
+      await connection.query(
+        `
+        UPDATE bill_counters
+        SET last_bill_number = ?
+        WHERE shop_id = ?
+        `,
+        [
+          billNumber,
+          shop_id,
+        ]
+      );
+    }
+
+    if (!billNumber || billNumber <= 0) {
+      await connection.rollback();
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to generate Bill Number",
+      });
+    }
+
+    // ==========================================================
     // INSERT BILL
-    // ----------------------------------------------------------
+    // ==========================================================
 
     await connection.query(
-      `INSERT INTO bills
+      `
+      INSERT INTO bills
       (
         id,
+        bill_number,
         shop_id,
         customer_name,
         total,
@@ -146,9 +246,11 @@ const role = (req.user.role || "")
         upi_amount,
         created_by
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
       [
         billId,
+        billNumber,
         shop_id,
         customer_name || "",
         finalTotal,
@@ -160,15 +262,22 @@ const role = (req.user.role || "")
       ]
     );
 
-    // ----------------------------------------------------------
+    // ==========================================================
     // INSERT BILL ITEMS + REDUCE STOCK
-    // ----------------------------------------------------------
+    // ==========================================================
 
     for (const item of items) {
-      const productId = item.product_id;
-      const quantity = Number(item.quantity || 0);
-      const sellingPrice = Number(item.selling_price || 0);
-      const buyingPrice = Number(item.buying_price || 0);
+      const productId =
+        item.product_id;
+
+      const quantity =
+        Number(item.quantity || 0);
+
+      const sellingPrice =
+        Number(item.selling_price || 0);
+
+      const buyingPrice =
+        Number(item.buying_price || 0);
 
       if (!productId) {
         await connection.rollback();
@@ -184,7 +293,8 @@ const role = (req.user.role || "")
 
         return res.status(400).json({
           success: false,
-          message: "Quantity must be greater than 0",
+          message:
+            "Quantity must be greater than 0",
         });
       }
 
@@ -192,26 +302,32 @@ const role = (req.user.role || "")
       // GET PRODUCT
       // --------------------------------------------------------
 
-      const [productRows] = await connection.query(
-        `SELECT id, name, stock
-         FROM products
-         WHERE id = ? AND shop_id = ?`,
-        [
-          productId,
-          shop_id,
-        ]
-      );
+      const [productRows] =
+        await connection.query(
+          `
+          SELECT id, name, stock
+          FROM products
+          WHERE id = ?
+            AND shop_id = ?
+          `,
+          [
+            productId,
+            shop_id,
+          ]
+        );
 
       if (productRows.length === 0) {
         await connection.rollback();
 
         return res.status(404).json({
           success: false,
-          message: `Product not found: ${productId}`,
+          message:
+            `Product not found: ${productId}`,
         });
       }
 
-      const product = productRows[0];
+      const product =
+        productRows[0];
 
       // --------------------------------------------------------
       // STOCK CHECK
@@ -227,17 +343,20 @@ const role = (req.user.role || "")
         });
       }
 
-      const total = quantity * sellingPrice;
+      const total =
+        quantity * sellingPrice;
 
       const profit =
-        (sellingPrice - buyingPrice) * quantity;
+        (sellingPrice - buyingPrice) *
+        quantity;
 
       // --------------------------------------------------------
       // INSERT BILL ITEM
       // --------------------------------------------------------
 
       await connection.query(
-        `INSERT INTO bill_items
+        `
+        INSERT INTO bill_items
         (
           bill_id,
           product_id,
@@ -248,7 +367,8 @@ const role = (req.user.role || "")
           total,
           profit
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `,
         [
           billId,
           productId,
@@ -266,9 +386,12 @@ const role = (req.user.role || "")
       // --------------------------------------------------------
 
       await connection.query(
-        `UPDATE products
-         SET stock = stock - ?
-         WHERE id = ? AND shop_id = ?`,
+        `
+        UPDATE products
+        SET stock = stock - ?
+        WHERE id = ?
+          AND shop_id = ?
+        `,
         [
           quantity,
           productId,
@@ -280,18 +403,21 @@ const role = (req.user.role || "")
       // LOW STOCK NOTIFICATION
       // --------------------------------------------------------
 
-      const newStock = product.stock - quantity;
+      const newStock =
+        product.stock - quantity;
 
       if (newStock <= 5) {
         await connection.query(
-          `INSERT INTO notifications
+          `
+          INSERT INTO notifications
           (
             shop_id,
             title,
             message,
             type
           )
-          VALUES (?, ?, ?, ?)`,
+          VALUES (?, ?, ?, ?)
+          `,
           [
             shop_id,
             "Low Stock Alert",
@@ -302,70 +428,78 @@ const role = (req.user.role || "")
       }
     }
 
-    // ----------------------------------------------------------
-    // NEW BILL NOTIFICATION
-    // ----------------------------------------------------------// ==========================================================
-// NEW BILL NOTIFICATION
-// OWNER BILL -> NO NOTIFICATION
-// STAFF BILL -> OWNER GETS NOTIFICATION
-// ==========================================================
+    // ==========================================================
+    // STAFF BILL NOTIFICATION
+    // ==========================================================
 
-if (role === "staff") {
-  let creatorName = "Staff";
+    if (role === "staff") {
+      let creatorName = "Staff";
 
-  try {
-    const [userRows] = await connection.query(
-      `
-      SELECT name
-      FROM users
-      WHERE id = ?
-        AND shop_id = ?
-      LIMIT 1
-      `,
-      [created_by, shop_id]
-    );
+      try {
+        const [userRows] =
+          await connection.query(
+            `
+            SELECT name
+            FROM users
+            WHERE id = ?
+              AND shop_id = ?
+            LIMIT 1
+            `,
+            [
+              created_by,
+              shop_id,
+            ]
+          );
 
-    if (userRows.length > 0) {
-      creatorName =
-        userRows[0].name?.toString().trim() || "Staff";
+        if (userRows.length > 0) {
+          creatorName =
+            userRows[0].name
+              ?.toString()
+              .trim() || "Staff";
+        }
+      } catch (userError) {
+        console.error(
+          "CREATOR NAME FETCH ERROR:",
+          userError
+        );
+      }
+
+      await connection.query(
+        `
+        INSERT INTO notifications
+        (
+          shop_id,
+          title,
+          message,
+          type
+        )
+        VALUES (?, ?, ?, ?)
+        `,
+        [
+          shop_id,
+          "New Bill Created",
+          `Bill #${billNumber} created by ${creatorName}. Amount ₹${finalTotal}`,
+          "bill",
+        ]
+      );
     }
-  } catch (userError) {
-    console.error(
-      "CREATOR NAME FETCH ERROR:",
-      userError
-    );
-  }
 
-  await connection.query(
-    `
-    INSERT INTO notifications
-    (
-      shop_id,
-      title,
-      message,
-      type
-    )
-    VALUES (?, ?, ?, ?)
-    `,
-    [
-      shop_id,
-      "New Bill Created",
-      `Bill #${billId} created by ${creatorName}. Amount ₹${finalTotal}`,
-      "bill",
-    ]
-  );
-}
-
-    // ----------------------------------------------------------
+    // ==========================================================
     // COMMIT
-    // ----------------------------------------------------------
+    // ==========================================================
 
     await connection.commit();
 
     return res.json({
       success: true,
       message: "Bill Created",
+
+      // INTERNAL DATABASE ID
       bill_id: billId,
+
+      // CUSTOMER BILL NUMBER
+      bill_number: billNumber,
+
       total: finalTotal,
       profit: totalProfit,
       payment_type: normalizedPaymentType,
@@ -376,7 +510,10 @@ if (role === "staff") {
   } catch (error) {
     await connection.rollback();
 
-    console.error("CREATE BILL ERROR:", error);
+    console.error(
+      "CREATE BILL ERROR:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
@@ -394,19 +531,21 @@ if (role === "staff") {
 // ============================================================
 
 exports.updateBill = async (req, res) => {
-  const connection = await db.getConnection();
+  const connection =
+    await db.getConnection();
 
   try {
     await connection.beginTransaction();
 
-    const billId = req.params.id;
+    const billId =
+      req.params.id;
 
-    const shop_id = req.user.shop_id;
+    const shop_id =
+      req.user.shop_id;
 
-    // IMPORTANT:
-    // Whoever is currently logged in and edits the bill
-    // will be stored as edited_by.
-    const edited_by = req.user.user_id;
+    // Person who edits
+    const edited_by =
+      req.user.user_id;
 
     const {
       customer_name,
@@ -416,6 +555,10 @@ exports.updateBill = async (req, res) => {
       upi_amount,
       items,
     } = req.body;
+
+    // ----------------------------------------------------------
+    // VALIDATE
+    // ----------------------------------------------------------
 
     if (
       !items ||
@@ -434,15 +577,19 @@ exports.updateBill = async (req, res) => {
     // GET OLD BILL
     // ----------------------------------------------------------
 
-    const [oldBills] = await connection.query(
-      `SELECT *
-       FROM bills
-       WHERE id = ? AND shop_id = ?`,
-      [
-        billId,
-        shop_id,
-      ]
-    );
+    const [oldBills] =
+      await connection.query(
+        `
+        SELECT *
+        FROM bills
+        WHERE id = ?
+          AND shop_id = ?
+        `,
+        [
+          billId,
+          shop_id,
+        ]
+      );
 
     if (oldBills.length === 0) {
       await connection.rollback();
@@ -453,11 +600,12 @@ exports.updateBill = async (req, res) => {
       });
     }
 
-    const oldBill = oldBills[0];
+    const oldBill =
+      oldBills[0];
 
     // ----------------------------------------------------------
-    // STAFF CAN EDIT ONLY THEIR OWN BILL
-    // OWNER CAN EDIT ANY BILL IN THEIR SHOP
+    // STAFF CAN EDIT ONLY OWN BILL
+    // OWNER CAN EDIT ANY BILL
     // ----------------------------------------------------------
 
     const role =
@@ -474,7 +622,8 @@ exports.updateBill = async (req, res) => {
 
       return res.status(403).json({
         success: false,
-        message: "You can edit only your own bill",
+        message:
+          "You can edit only your own bill",
       });
     }
 
@@ -482,19 +631,25 @@ exports.updateBill = async (req, res) => {
     // RESTORE OLD STOCK
     // ----------------------------------------------------------
 
-    const [oldItems] = await connection.query(
-      `SELECT product_id, quantity
-       FROM bill_items
-       WHERE bill_id = ?`,
-      [billId]
-    );
+    const [oldItems] =
+      await connection.query(
+        `
+        SELECT product_id, quantity
+        FROM bill_items
+        WHERE bill_id = ?
+        `,
+        [billId]
+      );
 
     for (const item of oldItems) {
       if (item.product_id) {
         await connection.query(
-          `UPDATE products
-           SET stock = stock + ?
-           WHERE id = ? AND shop_id = ?`,
+          `
+          UPDATE products
+          SET stock = stock + ?
+          WHERE id = ?
+            AND shop_id = ?
+          `,
           [
             item.quantity,
             item.product_id,
@@ -509,13 +664,15 @@ exports.updateBill = async (req, res) => {
     // ----------------------------------------------------------
 
     await connection.query(
-      `DELETE FROM bill_items
-       WHERE bill_id = ?`,
+      `
+      DELETE FROM bill_items
+      WHERE bill_id = ?
+      `,
       [billId]
     );
 
     // ----------------------------------------------------------
-    // CALCULATE NEW BILL
+    // CALCULATE NEW TOTAL
     // ----------------------------------------------------------
 
     let grandTotal = 0;
@@ -550,7 +707,7 @@ exports.updateBill = async (req, res) => {
     }
 
     // ----------------------------------------------------------
-    // PAYMENT AMOUNTS
+    // PAYMENT
     // ----------------------------------------------------------
 
     let cashAmount =
@@ -607,6 +764,15 @@ exports.updateBill = async (req, res) => {
       }
     }
 
+    else {
+      await connection.rollback();
+
+      return res.status(400).json({
+        success: false,
+        message: "Invalid payment type",
+      });
+    }
+
     // ----------------------------------------------------------
     // INSERT NEW ITEMS
     // ----------------------------------------------------------
@@ -629,7 +795,8 @@ exports.updateBill = async (req, res) => {
 
         return res.status(400).json({
           success: false,
-          message: "Product ID is required",
+          message:
+            "Product ID is required",
         });
       }
 
@@ -643,15 +810,14 @@ exports.updateBill = async (req, res) => {
         });
       }
 
-      // --------------------------------------------------------
-      // GET PRODUCT
-      // --------------------------------------------------------
-
       const [productRows] =
         await connection.query(
-          `SELECT id, name, stock
-           FROM products
-           WHERE id = ? AND shop_id = ?`,
+          `
+          SELECT id, name, stock
+          FROM products
+          WHERE id = ?
+            AND shop_id = ?
+          `,
           [
             productId,
             shop_id,
@@ -671,13 +837,7 @@ exports.updateBill = async (req, res) => {
       const product =
         productRows[0];
 
-      // --------------------------------------------------------
-      // STOCK CHECK
-      // --------------------------------------------------------
-
-      if (
-        product.stock < quantity
-      ) {
+      if (product.stock < quantity) {
         await connection.rollback();
 
         return res.status(400).json({
@@ -694,12 +854,11 @@ exports.updateBill = async (req, res) => {
         (sellingPrice - buyingPrice) *
         quantity;
 
-      // --------------------------------------------------------
       // INSERT ITEM
-      // --------------------------------------------------------
 
       await connection.query(
-        `INSERT INTO bill_items
+        `
+        INSERT INTO bill_items
         (
           bill_id,
           product_id,
@@ -710,7 +869,8 @@ exports.updateBill = async (req, res) => {
           total,
           profit
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `,
         [
           billId,
           productId,
@@ -723,14 +883,15 @@ exports.updateBill = async (req, res) => {
         ]
       );
 
-      // --------------------------------------------------------
       // REDUCE STOCK
-      // --------------------------------------------------------
 
       await connection.query(
-        `UPDATE products
-         SET stock = stock - ?
-         WHERE id = ? AND shop_id = ?`,
+        `
+        UPDATE products
+        SET stock = stock - ?
+        WHERE id = ?
+          AND shop_id = ?
+        `,
         [
           quantity,
           productId,
@@ -744,25 +905,28 @@ exports.updateBill = async (req, res) => {
     // ----------------------------------------------------------
     //
     // IMPORTANT:
-    // edited_by stores the USER ID of the person
-    // who actually performed the edit.
+    // bill_number is NOT changed.
     //
     // Example:
-    // Jinna edits -> edited_by = Jinna user ID
-    // Owner edits -> edited_by = Owner user ID
+    // Bill 49 remains Bill 49 after editing.
+    //
+    // edited_by stores whoever edited it.
     // ----------------------------------------------------------
 
     await connection.query(
-      `UPDATE bills
-       SET customer_name = ?,
-           total = ?,
-           discount = ?,
-           payment_type = ?,
-           cash_amount = ?,
-           upi_amount = ?,
-           edited_by = ?,
-           edited_at = CURRENT_TIMESTAMP
-       WHERE id = ? AND shop_id = ?`,
+      `
+      UPDATE bills
+      SET customer_name = ?,
+          total = ?,
+          discount = ?,
+          payment_type = ?,
+          cash_amount = ?,
+          upi_amount = ?,
+          edited_by = ?,
+          edited_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+        AND shop_id = ?
+      `,
       [
         customer_name || "",
         finalTotal,
@@ -786,9 +950,12 @@ exports.updateBill = async (req, res) => {
       success: true,
       message: "Bill Updated",
       bill_id: billId,
+      bill_number:
+        oldBill.bill_number,
       total: finalTotal,
       profit: totalProfit,
-      payment_type: normalizedPaymentType,
+      payment_type:
+        normalizedPaymentType,
       cash_amount: cashAmount,
       upi_amount: upiAmount,
       edited_by,
@@ -797,7 +964,10 @@ exports.updateBill = async (req, res) => {
   } catch (error) {
     await connection.rollback();
 
-    console.error("UPDATE BILL ERROR:", error);
+    console.error(
+      "UPDATE BILL ERROR:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
@@ -816,8 +986,11 @@ exports.updateBill = async (req, res) => {
 
 exports.getBills = async (req, res) => {
   try {
-    const shop_id = req.user.shop_id;
-    const user_id = req.user.user_id;
+    const shop_id =
+      req.user.shop_id;
+
+    const user_id =
+      req.user.user_id;
 
     const role =
       (req.user.role || "")
@@ -825,15 +998,7 @@ exports.getBills = async (req, res) => {
         .toLowerCase();
 
     // ----------------------------------------------------------
-    // IMPORTANT:
-    // created_by = users.id
-    // edited_by  = users.id
-    //
-    // Therefore:
-    // u.name  -> person who created the bill
-    // eu.name -> person who edited the bill
-    //
-    // We intentionally use NAME, NOT username/phone.
+    // CREATED BY / EDITED BY NAMES
     // ----------------------------------------------------------
 
     let query = `
@@ -852,11 +1017,13 @@ exports.getBills = async (req, res) => {
       WHERE b.shop_id = ?
     `;
 
-    const params = [shop_id];
+    const params = [
+      shop_id,
+    ];
 
     // ----------------------------------------------------------
-    // STAFF → OWN BILLS ONLY
-    // OWNER → ALL SHOP BILLS
+    // STAFF -> OWN BILLS ONLY
+    // OWNER -> ALL SHOP BILLS
     // ----------------------------------------------------------
 
     if (role !== "owner") {
@@ -867,8 +1034,19 @@ exports.getBills = async (req, res) => {
       params.push(user_id);
     }
 
+    // ----------------------------------------------------------
+    // ORDER
+    // ----------------------------------------------------------
+    //
+    // IMPORTANT:
+    // Bill History should use bill_number order,
+    // NOT the internal database ID.
+    //
+    // ----------------------------------------------------------
+
     query += `
-      ORDER BY b.id DESC
+      ORDER BY
+        b.bill_number DESC
     `;
 
     const [bills] =
@@ -884,10 +1062,12 @@ exports.getBills = async (req, res) => {
     for (const bill of bills) {
       const [items] =
         await db.query(
-          `SELECT *
-           FROM bill_items
-           WHERE bill_id = ?
-           ORDER BY id ASC`,
+          `
+          SELECT *
+          FROM bill_items
+          WHERE bill_id = ?
+          ORDER BY id ASC
+          `,
           [bill.id]
         );
 
@@ -956,9 +1136,12 @@ exports.deleteBill = async (req, res) => {
 
     const [billRows] =
       await connection.query(
-        `SELECT *
-         FROM bills
-         WHERE id = ? AND shop_id = ?`,
+        `
+        SELECT *
+        FROM bills
+        WHERE id = ?
+          AND shop_id = ?
+        `,
         [
           billId,
           shop_id,
@@ -981,9 +1164,11 @@ exports.deleteBill = async (req, res) => {
 
     const [items] =
       await connection.query(
-        `SELECT product_id, quantity
-         FROM bill_items
-         WHERE bill_id = ?`,
+        `
+        SELECT product_id, quantity
+        FROM bill_items
+        WHERE bill_id = ?
+        `,
         [billId]
       );
 
@@ -994,9 +1179,12 @@ exports.deleteBill = async (req, res) => {
     for (const item of items) {
       if (item.product_id) {
         await connection.query(
-          `UPDATE products
-           SET stock = stock + ?
-           WHERE id = ? AND shop_id = ?`,
+          `
+          UPDATE products
+          SET stock = stock + ?
+          WHERE id = ?
+            AND shop_id = ?
+          `,
           [
             item.quantity,
             item.product_id,
@@ -1011,8 +1199,10 @@ exports.deleteBill = async (req, res) => {
     // ----------------------------------------------------------
 
     await connection.query(
-      `DELETE FROM bill_items
-       WHERE bill_id = ?`,
+      `
+      DELETE FROM bill_items
+      WHERE bill_id = ?
+      `,
       [billId]
     );
 
@@ -1021,8 +1211,11 @@ exports.deleteBill = async (req, res) => {
     // ----------------------------------------------------------
 
     await connection.query(
-      `DELETE FROM bills
-       WHERE id = ? AND shop_id = ?`,
+      `
+      DELETE FROM bills
+      WHERE id = ?
+        AND shop_id = ?
+      `,
       [
         billId,
         shop_id,
@@ -1030,7 +1223,18 @@ exports.deleteBill = async (req, res) => {
     );
 
     // ----------------------------------------------------------
-    // COMMIT
+    // IMPORTANT
+    // ----------------------------------------------------------
+    //
+    // We DO NOT decrease bill_counters.
+    //
+    // Example:
+    // Bills 1...49 exist
+    // Bill 49 deleted
+    // Next bill = 50
+    //
+    // This prevents duplicate Bill Numbers.
+    //
     // ----------------------------------------------------------
 
     await connection.commit();
