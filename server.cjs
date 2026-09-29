@@ -30,7 +30,8 @@ app.use(express.json());
 
 app.use("/", authRoutes);
 app.use("/", subscriptionRoutes);
-
+const adminRoutes = require("./routes/adminRoutes");
+app.use("/api/admin", adminRoutes);
 // ======================================================
 // SUBSCRIPTION STATUS
 // ======================================================
