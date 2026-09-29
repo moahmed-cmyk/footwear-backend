@@ -43,6 +43,32 @@ if (Number(plan_id) === 3) {
       });
     }
 
+    // ======================================================
+// ACTIVE SUBSCRIPTION SECURITY
+// Customer cannot purchase another plan while
+// an existing subscription is still active.
+// ======================================================
+const [activeSubscriptions] = await db.query(
+  `
+  SELECT id
+  FROM subscriptions
+  WHERE shop_id = ?
+    AND status = 'active'
+    AND end_date > NOW()
+  LIMIT 1
+  `,
+  [shopId]
+);
+
+if (activeSubscriptions.length > 0) {
+  return res.status(409).json({
+    success: false,
+    message:
+      "You already have an active subscription. You can purchase a new plan after it expires.",
+    subscription_active: true,
+  });
+}
+
     // -------------------------------------------------
     // Get plan from database
     // IMPORTANT: Never trust price from Flutter
