@@ -65,11 +65,6 @@ const getDashboardStats = async (req, res) => {
   }
 };
 
-module.exports = {
-  getDashboardStats,
-  getMonthlyRevenue,
-};
-
 const getMonthlyRevenue = async (req, res) => {
   try {
     const [rows] = await db.query(`
@@ -105,4 +100,9 @@ const getMonthlyRevenue = async (req, res) => {
       message: "Failed to load monthly revenue",
     });
   }
+};
+
+module.exports = {
+  getDashboardStats,
+  getMonthlyRevenue,
 };
