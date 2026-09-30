@@ -2,7 +2,6 @@ const db = require("../config/db");
 
 const getDashboardStats = async (req, res) => {
   try {
-    // Shop statistics
     const [[shopStats]] = await db.query(`
       SELECT
         COUNT(*) AS totalShops,
@@ -34,7 +33,6 @@ const getDashboardStats = async (req, res) => {
       FROM shops
     `);
 
-    // Current month's paid subscription revenue
     const [[revenueStats]] = await db.query(`
       SELECT
         COALESCE(SUM(amount), 0) AS monthlyRevenue
@@ -42,8 +40,8 @@ const getDashboardStats = async (req, res) => {
       WHERE status = 'paid'
         AND created_at >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
         AND created_at < DATE_ADD(
-          LAST_DAY(CURDATE()),
-          INTERVAL 1 DAY
+          DATE_FORMAT(CURDATE(), '%Y-%m-01'),
+          INTERVAL 1 MONTH
         )
     `);
 
