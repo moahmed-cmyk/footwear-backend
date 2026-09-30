@@ -13,4 +13,10 @@ router.get(
   adminDashboardController.getDashboardStats
 );
 
+router.get(
+  "/dashboard/monthly-revenue",
+  adminAuthMiddleware,
+  adminDashboardController.getMonthlyRevenue
+);
+
 module.exports = router;

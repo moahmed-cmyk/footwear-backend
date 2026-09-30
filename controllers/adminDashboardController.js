@@ -65,4 +65,44 @@ const getDashboardStats = async (req, res) => {
   }
 };
 
-module.exports = { getDashboardStats };
+module.exports = {
+  getDashboardStats,
+  getMonthlyRevenue,
+};
+
+const getMonthlyRevenue = async (req, res) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT
+        DATE_FORMAT(created_at, '%Y-%m') AS month,
+        COALESCE(SUM(amount), 0) AS revenue
+      FROM subscriptions
+      WHERE status = 'paid'
+        AND created_at >= DATE_FORMAT(
+          DATE_SUB(CURDATE(), INTERVAL 5 MONTH),
+          '%Y-%m-01'
+        )
+        AND created_at < DATE_ADD(
+          DATE_FORMAT(CURDATE(), '%Y-%m-01'),
+          INTERVAL 1 MONTH
+        )
+      GROUP BY DATE_FORMAT(created_at, '%Y-%m')
+      ORDER BY month ASC
+    `);
+
+    return res.status(200).json({
+      success: true,
+      data: rows.map((row) => ({
+        month: row.month,
+        revenue: Number(row.revenue || 0),
+      })),
+    });
+  } catch (error) {
+    console.error("ADMIN MONTHLY REVENUE ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to load monthly revenue",
+    });
+  }
+};
