@@ -17,7 +17,9 @@ const formatDate = (value) => {
 const addDays = (dateString, days) => {
   const [year, month, day] = dateString.split("-").map(Number);
   const date = new Date(Date.UTC(year, month - 1, day));
+
   date.setUTCDate(date.getUTCDate() + days);
+
   return date.toISOString().slice(0, 10);
 };
 
@@ -85,7 +87,7 @@ const activateSubscription = async (req, res) => {
     connection = await db.getConnection();
     await connection.beginTransaction();
 
-    // Prevent activating a shop that does not exist.
+    // Check whether the shop exists and lock its subscription row.
     const [shopRows] = await connection.query(
       `SELECT id, subscription_end_date
        FROM shops
@@ -96,13 +98,14 @@ const activateSubscription = async (req, res) => {
 
     if (shopRows.length === 0) {
       await connection.rollback();
+
       return res.status(404).json({
         success: false,
         message: "Shop not found",
       });
     }
 
-    // Confirm the configured ₹299 / 30-day plan.
+    // Verify the configured ₹299 / 30-day plan.
     const [planRows] = await connection.query(
       `SELECT id, price, duration_days, status
        FROM subscription_plans
@@ -120,13 +123,14 @@ const activateSubscription = async (req, res) => {
       plan.status !== "active"
     ) {
       await connection.rollback();
+
       return res.status(400).json({
         success: false,
         message: "₹299 monthly subscription plan is not configured correctly",
       });
     }
 
-    // Do not allow the same GPay reference to be used twice.
+    // Prevent reusing the same GPay payment reference.
     const [duplicateRows] = await connection.query(
       `SELECT id
        FROM subscriptions
@@ -137,6 +141,7 @@ const activateSubscription = async (req, res) => {
 
     if (duplicateRows.length > 0) {
       await connection.rollback();
+
       return res.status(409).json({
         success: false,
         message: "This payment reference has already been used",
@@ -148,26 +153,46 @@ const activateSubscription = async (req, res) => {
     );
 
     const today = formatDate(todayRows[0].today);
-    const currentEndDate = formatDate(shopRows[0].subscription_end_date);
+    const currentEndDate = formatDate(
+      shopRows[0].subscription_end_date
+    );
 
-    // If the current subscription is still valid, continue after its expiry.
-    // Otherwise, start from today.
-    const hasRemainingDays = currentEndDate && currentEndDate >= today;
+    // Continue after the current expiry if subscription is still valid.
+    const hasRemainingDays =
+      currentEndDate && currentEndDate >= today;
+
     const startDate = hasRemainingDays
       ? addDays(currentEndDate, 1)
       : today;
 
-    // Add 30 days to the existing expiry when still active.
-    // This preserves the customer's remaining days.
     const endDate = hasRemainingDays
       ? addDays(currentEndDate, EXPECTED_DURATION_DAYS)
       : addDays(today, EXPECTED_DURATION_DAYS);
 
+    // Get the next subscription ID from the TiDB sequence.
+    const [sequenceRows] = await connection.query(
+      `SELECT NEXTVAL(subscriptions_id_seq) AS next_id`
+    );
+
+    const subscriptionId = sequenceRows[0].next_id;
+
+    // Insert the paid subscription.
     await connection.query(
       `INSERT INTO subscriptions
-        (shop_id, plan_id, amount, status, start_date, end_date, payment_id, order_id)
-       VALUES (?, ?, ?, 'paid', ?, ?, ?, ?)`,
+        (
+          id,
+          shop_id,
+          plan_id,
+          amount,
+          status,
+          start_date,
+          end_date,
+          payment_id,
+          order_id
+        )
+       VALUES (?, ?, ?, ?, 'paid', ?, ?, ?, ?)`,
       [
+        subscriptionId,
         shopId,
         PAID_PLAN_ID,
         EXPECTED_AMOUNT,
@@ -178,6 +203,7 @@ const activateSubscription = async (req, res) => {
       ]
     );
 
+    // Update the shop's current subscription details.
     await connection.query(
       `UPDATE shops
        SET subscription_status = 'active',
@@ -207,18 +233,26 @@ const activateSubscription = async (req, res) => {
       try {
         await connection.rollback();
       } catch (rollbackError) {
-        console.error("SUBSCRIPTION ROLLBACK ERROR:", rollbackError);
+        console.error(
+          "SUBSCRIPTION ROLLBACK ERROR:",
+          rollbackError
+        );
       }
     }
 
-    console.error("ADMIN SUBSCRIPTION ACTIVATION ERROR:", error);
+    console.error(
+      "ADMIN SUBSCRIPTION ACTIVATION ERROR:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
       message: "Failed to activate subscription",
     });
   } finally {
-    if (connection) connection.release();
+    if (connection) {
+      connection.release();
+    }
   }
 };
 
