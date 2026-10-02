@@ -21,11 +21,17 @@ router.get(
   adminDashboardController.getMonthlyRevenue
 );
 
-// Shops list
 router.get(
   "/shops",
   adminAuthMiddleware,
   adminShopsController.getShops
+);
+
+// Manual subscription activation after admin verifies GPay payment.
+router.post(
+  "/shops/activate-subscription",
+  adminAuthMiddleware,
+  adminShopsController.activateSubscription
 );
 
 module.exports = router;
